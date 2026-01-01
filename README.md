@@ -1,1 +1,2 @@
 # BLDC_FOC_G431_ESC1
+- 2026-01-01 V0.0 初始化 ESC1开发板 LED UART2上位机发送

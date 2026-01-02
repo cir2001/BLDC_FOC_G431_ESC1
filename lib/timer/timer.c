@@ -41,28 +41,28 @@ void TIM1_UP_TIM10_IRQHandler(void)
  * @param  arr: 自动重装载值 (170MHz下, 5666对应15kHz)
  * @param  psc: 分频系数 (通常为0)
  */
-void TIM1_PWM_Init(u16 arr, u16 psc)
+void TIM1_PWM_Init(u16 arr)
 {
-    // 1. 使能时钟
-    RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;   
-    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN | RCC_AHB2ENR_GPIOBEN;
+    // 1. 开启 GPIOA, GPIOB, GPIOC 和 TIM1 时钟
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN | RCC_AHB2ENR_GPIOBEN | RCC_AHB2ENR_GPIOCEN;
+    RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
 
-    // 2. 配置 PA8, PA11, PA12 为复用功能 (AF6)
-    // 这种配置确保了不触碰 PA9 和 PA10
-    GPIO_Set(GPIOA, PIN8 | PIN11 | PIN12, GPIO_MODE_AF, GPIO_OTYPE_PP, GPIO_SPEED_170M, GPIO_PUPD_NONE);
-    GPIO_AF_Set(GPIOA, 8, 6);
-    GPIO_AF_Set(GPIOA, 11, 6);
-    GPIO_AF_Set(GPIOA, 12, 6);
+    // 2. 配置引脚复用 (根据 UM2516 Table 4 定义)
+    // PA8, PA9, PA10 -> AF6 (TIM1_CH1/2/3)
+    GPIO_AF_Set(GPIOA, 8, 6); 
+    GPIO_AF_Set(GPIOA, 9, 6); 
+    GPIO_AF_Set(GPIOA, 10, 6);
     
-    // 3. 配置互补通道 PB13, PB14, PB15 (AF6)
-    GPIO_Set(GPIOB, PIN13 | PIN14 | PIN15, GPIO_MODE_AF, GPIO_OTYPE_PP, GPIO_SPEED_170M, GPIO_PUPD_NONE);
-    GPIO_AF_Set(GPIOB, 13, 6);
-    GPIO_AF_Set(GPIOB, 14, 6);
-    GPIO_AF_Set(GPIOB, 15, 6);
+    // PC13 -> AF2 (TIM1_CH1N) [手册规定映射]
+    GPIO_AF_Set(GPIOC, 13, 2); 
+    // PA12 -> AF6 (TIM1_CH2N) [手册规定映射]
+    GPIO_AF_Set(GPIOA, 12, 6); 
+    // PB15 -> AF4 (TIM1_CH3N) [手册规定映射]
+    GPIO_AF_Set(GPIOB, 15, 4);
 
     // 4. 定时器基础设置
     TIM1->ARR = arr;
-    TIM1->PSC = psc;
+    TIM1->PSC = 0;
 
     // 5. 设置中心对齐模式 1 (向上/向下计数均在达到比较值时翻转)
     // 这种模式下采样最准

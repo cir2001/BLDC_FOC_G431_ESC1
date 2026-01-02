@@ -16,7 +16,7 @@
 #define COUNTER_RESET 0			//0
 
 
-void TIM1_PWM_Init(u16 arr, u16 psc);
+void TIM1_PWM_Init(u16 arr);
 
 
 #endif

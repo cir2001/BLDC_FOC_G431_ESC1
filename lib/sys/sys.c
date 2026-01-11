@@ -25,8 +25,13 @@ void MY_NVIC_Init(u8 NVIC_PreemptionPriority, u8 NVIC_SubPriority, u8 NVIC_Chann
     NVIC->IP[NVIC_Channel] |= temp << 4;
 }
 
-// GPIO复用设置
 void GPIO_AF_Set(GPIO_TypeDef* GPIOx, u8 BITx, u8 AFx) {
+    // 1. 设置 MODER 寄存器为 "复用模式" (10)
+    // 每个引脚占用 2 位，所以左移 BITx * 2
+    GPIOx->MODER &= ~(3U << (BITx * 2));
+    GPIOx->MODER |= (2U << (BITx * 2));
+
+    // 2. 设置 AFR 寄存器 (你原来的逻辑是正确的)
     GPIOx->AFR[BITx >> 3] &= ~(0X0F << ((BITx & 0X07) * 4));
     GPIOx->AFR[BITx >> 3] |= (u32)AFx << ((BITx & 0X07) * 4);
 }
@@ -109,6 +114,8 @@ void SystemClock_Config(void) {
 
     // 7. 配置总线分频 (HCLK=170MHz, PCLK1=170MHz, PCLK2=170MHz)
     RCC->CFGR &= ~(RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2);
+
+    SCB->CPACR |= ((3UL << 10*2)|(3UL << 11*2)); // 使能FPU
 }
 
 

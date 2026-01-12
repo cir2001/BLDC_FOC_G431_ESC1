@@ -26,34 +26,31 @@ void Set_PWM_Duty(uint16_t u, uint16_t v, uint16_t w) {
  */
 uint16_t FOC_Align_Sensor(void) 
 {
-    printf("Starting Alignment...\r\n");
+    printf("Force Aligning...\r\n");
 
-    float test_angle = 0.0f; // 软件零度
-    float v_align = 0.25f;   // 足够把转子拉动的对齐电压
-    
-    // 强制设定 Vd 为对齐电压，Vq 为 0
-    float Valpha = v_align * cosf(test_angle); 
-    float Vbeta  = v_align * sinf(test_angle);
+    // 第一步：用较大电压强制锁死，确保克服摩擦力
+    TIM1->CCR1 = (uint16_t)(0.5f * 5666.0f); 
+    TIM1->CCR2 = 0;
+    TIM1->CCR3 = 0;
+    TIM1->BDTR |= TIM_BDTR_MOE;
+    delay_ms(1000); 
 
-    SVPWM_Output(Valpha, Vbeta); // 使用你的 SVPWM 函数进行对齐
-    TIM1->BDTR |= TIM_BDTR_MOE;  // 确保输出开启
+    // 第二步：稍微降低电压，减少发热，等待摆动停止
+    TIM1->CCR1 = (uint16_t)(0.3f * 5666.0f); 
+    delay_ms(1000);
 
-    // 2. 等待电机转子稳定 (对于机器人关节，1-2秒足够)
-    delay_ms(2000);
-
-    // 3. 读取此时编码器的机械角度作为零位偏移
-    uint32_t avg_offset = 0;
-    for(int i=0; i<10; i++) {
-        avg_offset += (AS5047P_GetAngle() & 0x3FFF);
-        delay_ms(10);
+    // 第三步：多次采样取平均值，过滤噪声
+    uint32_t avg = 0;
+    for(int i=0; i<32; i++) { // 增加采样次数到 32 次
+        avg += (AS5047P_GetAngle() & 0x3FFF);
+        delay_ms(2);
     }
-
-    uint16_t zero_offset = (avg_offset / 10) & 0x3FFF;
-
-    // 4. 关闭输出，防止电机长时间通电过热
-    Set_PWM_Duty(0, 0, 0);
-
-    printf("Alignment Done! Zero Offset: %d\r\n", zero_offset);
+    
+    uint16_t zero_offset = (uint16_t)(avg / 32);
+    
+    // 释放电机，准备进入闭环
+    TIM1->CCR1 = 0;
+    printf("Verified Offset: %d\r\n", zero_offset);
     return zero_offset;
 }
 
@@ -78,7 +75,7 @@ float Update_Electrical_Angle(uint16_t current_mech_angle, uint16_t zero_offset)
     if (elec_angle < 0) elec_angle += 2.0f * M_PI;
 
     // 尝试在此处添加方向取反逻辑
-    elec_angle = 2.0f * 3.14159265f - elec_angle;
+    //elec_angle = 2.0f * 3.14159265f - elec_angle;
     
     return elec_angle; // 根据实际电机安装方向调整电角度零点
 }

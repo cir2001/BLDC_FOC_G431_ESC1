@@ -19,6 +19,6 @@
 void TIM1_PWM_Init(u16 arr);
 void SVPWM_Output(float Valpha, float Vbeta);
 void Inverse_Park(float Vd, float Vq, float angle, float *Valpha, float *Vbeta);
-
+void SVPWM_Output_Standard(float Valpha, float Vbeta);
 
 #endif

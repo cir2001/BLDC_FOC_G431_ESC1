@@ -40,7 +40,7 @@ u16 Timer1_Counter = 0;
 uint16_t current_raw;
 float elec_angle;
 float open_loop_angle = 0.0f;
-float theta = 0.0f;
+float test_theta = 0.0f;
 //==============================================
 // TIM1 更新中断服务函数
 //==============================================
@@ -73,29 +73,71 @@ void TIM1_UP_TIM16_IRQHandler(void)
         // TIM1->CCR2 = (uint16_t)(duty_v * 5666.0f);
         // TIM1->CCR3 = (uint16_t)(duty_w * 5666.0f);
 //------- 开环测试 end -----------------------
-
-//------- 闭环测试 -----------------------
-        // 1. 读取编码器
+//------- FOC 测试 -----------------------
+//--- 不需要再进行 2*PI - elec_angle 的取反操作
+        //1. 获取编码器角度
         uint16_t raw = AS5047P_GetAngle();
         if(raw == 0xFFFF) return;
 
-        // 2. 获取当前电角度（已取反）
+        // 2. 获取电角度 (保持成功的 Update_Electrical_Angle 逻辑)
         float elec_angle = Update_Electrical_Angle(raw, my_zero_offset);
 
-        // 3. 闭环控制：在当前角度基础上超前 90 度 (1.5708 rad)
-        // 这是产生最大转矩 (Q轴) 的位置
-        float theta_feedback = elec_angle + 1.5708f; 
-        
-        float V_mag = 0.25f; // 先给一个小一点的电压，防止剧烈震动
-        float duty_u = 0.5f + V_mag * sinf(theta_feedback);
-        float duty_v = 0.5f + V_mag * sinf(theta_feedback - 2.0944f);
-        float duty_w = 0.5f + V_mag * sinf(theta_feedback + 2.0944f);
+        // 3. 设定转矩 (Vq)
+        // 注意：如果你之前 SPWM 顺时针转，target_Vq 设为正值通常也是顺时针
+        float target_Vq = -0.3f; 
+        float target_Vd = 0.0f;
 
-        // 4. 写入寄存器 (ARR=5666)
-        TIM1->CCR1 = (uint16_t)(duty_u * 5666.0f);
-        TIM1->CCR2 = (uint16_t)(duty_v * 5666.0f);
-        TIM1->CCR3 = (uint16_t)(duty_w * 5666.0f);
+        // 4. 修正后的反 Park 变换
+        // 我们给角度补偿 1.5708 rad (90度)，以匹配你 SPWM 的坐标系
+        float s = sinf(elec_angle);
+        float c = cosf(elec_angle);
+
+        // 这是 FOC 的灵魂公式：将 DQ 轴转换回 Alpha/Beta 轴
+        // float Valpha = target_Vd * c - target_Vq * s;
+        // float Vbeta  = target_Vd * s + target_Vq * c;
+        
+        float Valpha = -target_Vq*s; 
+        float Vbeta = target_Vq*c;
+
+        SVPWM_Output_Standard(Valpha, Vbeta);
+//------- FOC 测试 end -----------------------
+//------- 闭环测试 -----------------------
+//--- 需要进行 2*PI - elec_angle 的取反操作
+        // 1. 读取编码器
+        // uint16_t raw = AS5047P_GetAngle();
+        // if(raw == 0xFFFF) return;
+
+        // // 2. 获取当前电角度（已取反）
+        // float elec_angle = Update_Electrical_Angle(raw, my_zero_offset);
+
+        // // 3. 闭环控制：在当前角度基础上超前 90 度 (1.5708 rad)
+        // // 这是产生最大转矩 (Q轴) 的位置
+        // float theta_feedback = elec_angle + 1.5708f; 
+        
+        // float V_mag = 0.25f; // 先给一个小一点的电压，防止剧烈震动
+        // float duty_u = 0.5f + V_mag * sinf(theta_feedback);
+        // float duty_v = 0.5f + V_mag * sinf(theta_feedback - 2.0944f);
+        // float duty_w = 0.5f + V_mag * sinf(theta_feedback + 2.0944f);
+
+        // // 4. 写入寄存器 (ARR=5666)
+        // TIM1->CCR1 = (uint16_t)(duty_u * 5666.0f);
+        // TIM1->CCR2 = (uint16_t)(duty_v * 5666.0f);
+        // TIM1->CCR3 = (uint16_t)(duty_w * 5666.0f);
 //------- 闭环测试 end-----------------------
+//------- 标准 SVPWM 开环测试-----------------
+        // test_theta += 0.0005f; // 步进
+        // if(test_theta > 6.28318f) test_theta -= 6.28318f;
+
+        // float V_mag = 0.2;
+        // // 开环直接生成 Alpha/Beta
+        // float Valpha = V_mag * cosf(test_theta);
+        // float Vbeta  = V_mag * sinf(test_theta);
+
+        // SVPWM_Output_Standard(Valpha, Vbeta);
+//------- 标准 SVPWM 开环测试 end -----------------
+
+
+//--------------------------------------------
         TIM1->BDTR |= TIM_BDTR_MOE; // 强制开启主输出使能
     }
 }
@@ -227,8 +269,43 @@ void SVPWM_Output(float Valpha, float Vbeta)
     }
 
     // 写入寄存器。注意：确认 ARR 是否真的是 18888
-    TIM1->CCR1 = (uint16_t)(Ta * 18888.0f);
-    TIM1->CCR2 = (uint16_t)(Tb * 18888.0f);
-    TIM1->CCR3 = (uint16_t)(Tc * 18888.0f);
+    TIM1->CCR1 = (uint16_t)(Ta * 5666.0f);
+    TIM1->CCR2 = (uint16_t)(Tb * 5666.0f);
+    TIM1->CCR3 = (uint16_t)(Tc * 5666.0f);
+}
+
+void SVPWM_Output_Standard(float Valpha, float Vbeta) 
+{
+    // 幅度限幅：防止 Valpha 和 Vbeta 的矢量模值超过母线电压利用极限 (1.0)
+    float v_mod = sqrtf(Valpha*Valpha + Vbeta*Vbeta);
+    if (v_mod > 1.0f) {
+        Valpha /= v_mod;
+        Vbeta /= v_mod;
+    }
+    // 1. 反克拉克变换 (Inverse Clarke) - 直接得到三相电压
+    float U_u = Valpha;
+    float U_v = -0.5f * Valpha - 0.8660254f * Vbeta; // 注意这里改成了减号
+    float U_w = -0.5f * Valpha + 0.8660254f * Vbeta; // 注意这里改成了加号
+
+    // 2. 计算最小值和最大值，用于中心对齐（SVPWM 的核心）
+    float max_v = U_u;
+    if (U_v > max_v) max_v = U_v;
+    if (U_w > max_v) max_v = U_w;
+
+    float min_v = U_u;
+    if (U_v < min_v) min_v = U_v;
+    if (U_w < min_v) min_v = U_w;
+
+    // 3. 注入零序分量，实现 SVPWM
+    float V_offset = (max_v + min_v) * 0.5f;
+    
+    float Ta = (U_u - V_offset) + 0.5f;
+    float Tb = (U_v - V_offset) + 0.5f;
+    float Tc = (U_w - V_offset) + 0.5f;
+
+    // 4. 写入寄存器 (ARR = 5666)
+    TIM1->CCR1 = (uint16_t)(Ta * 5666.0f);
+    TIM1->CCR2 = (uint16_t)(Tb * 5666.0f);
+    TIM1->CCR3 = (uint16_t)(Tc * 5666.0f);
 }
 

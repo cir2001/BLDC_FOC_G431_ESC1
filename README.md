@@ -5,3 +5,4 @@
 - ESC1开发板 模拟SPI采集AS5407P磁编码器位置，电机转动，初步
 ## 2026-01-12 V0.1 电压FOC 基础
 - TIM1中断里，实现开环测试，电压FOC测试，闭环不带SVPWM_Output_Standard测试，标准  SVPWM 开环测试；SVPWM_Output_Standard (Min-Max 法)测试
+- 实现速度环控制PID，给定vq，实现速度的控制

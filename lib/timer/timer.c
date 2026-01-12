@@ -3,6 +3,8 @@
 #include "led.h"
 #include <math.h>
 #include "align.h"
+#include "control.h"
+
 //////////////////////////////////////////////////////////////////////////////////	 
 //
 ////////////////////////////////////////////////////////////////////////////////// 	
@@ -41,6 +43,8 @@ uint16_t current_raw;
 float elec_angle;
 float open_loop_angle = 0.0f;
 float test_theta = 0.0f;
+
+extern PID_Controller vel_pid;
 //==============================================
 // TIM1 更新中断服务函数
 //==============================================
@@ -75,31 +79,31 @@ void TIM1_UP_TIM16_IRQHandler(void)
 //------- 开环测试 end -----------------------
 //------- FOC 测试 -----------------------
 //--- 不需要再进行 2*PI - elec_angle 的取反操作
-        //1. 获取编码器角度
-        uint16_t raw = AS5047P_GetAngle();
-        if(raw == 0xFFFF) return;
+        // //1. 获取编码器角度
+        // uint16_t raw = AS5047P_GetAngle();
+        // if(raw == 0xFFFF) return;
 
-        // 2. 获取电角度 (保持成功的 Update_Electrical_Angle 逻辑)
-        float elec_angle = Update_Electrical_Angle(raw, my_zero_offset);
+        // // 2. 获取电角度 (保持成功的 Update_Electrical_Angle 逻辑)
+        // float elec_angle = Update_Electrical_Angle(raw, my_zero_offset);
 
-        // 3. 设定转矩 (Vq)
-        // 注意：如果你之前 SPWM 顺时针转，target_Vq 设为正值通常也是顺时针
-        float target_Vq = -0.3f; 
-        float target_Vd = 0.0f;
+        // // 3. 设定转矩 (Vq)
+        // // 注意：如果你之前 SPWM 顺时针转，target_Vq 设为正值通常也是顺时针
+        // float target_Vq = -0.3f; 
+        // float target_Vd = 0.0f;
 
-        // 4. 修正后的反 Park 变换
-        // 我们给角度补偿 1.5708 rad (90度)，以匹配你 SPWM 的坐标系
-        float s = sinf(elec_angle);
-        float c = cosf(elec_angle);
+        // // 4. 修正后的反 Park 变换
+        // // 我们给角度补偿 1.5708 rad (90度)，以匹配你 SPWM 的坐标系
+        // float s = sinf(elec_angle);
+        // float c = cosf(elec_angle);
 
-        // 这是 FOC 的灵魂公式：将 DQ 轴转换回 Alpha/Beta 轴
-        // float Valpha = target_Vd * c - target_Vq * s;
-        // float Vbeta  = target_Vd * s + target_Vq * c;
+        // // 这是 FOC 的灵魂公式：将 DQ 轴转换回 Alpha/Beta 轴
+        // // float Valpha = target_Vd * c - target_Vq * s;
+        // // float Vbeta  = target_Vd * s + target_Vq * c;
         
-        float Valpha = -target_Vq*s; 
-        float Vbeta = target_Vq*c;
+        // float Valpha = -target_Vq*s; 
+        // float Vbeta = target_Vq*c;
 
-        SVPWM_Output_Standard(Valpha, Vbeta);
+        // SVPWM_Output_Standard(Valpha, Vbeta);
 //------- FOC 测试 end -----------------------
 //------- 闭环测试 -----------------------
 //--- 需要进行 2*PI - elec_angle 的取反操作
@@ -135,7 +139,29 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
         // SVPWM_Output_Standard(Valpha, Vbeta);
 //------- 标准 SVPWM 开环测试 end -----------------
+//---- 速度 PID ----------------------------------
+        // 1. 传感器获取
+        uint16_t raw = AS5047P_GetAngle();
+        float mech_angle = (float)raw * (2.0f * 3.14159265f / 16384.0f); // 机械角度
+        float elec_angle = Update_Electrical_Angle(raw, my_zero_offset);
 
+        // 2. 计算实时滤波速度
+        float speed_now = calculate_speed_rad_s(mech_angle);
+
+        // 3. PID 计算得出 Vq
+        // 假设你想要电机以 10 rad/s 的速度旋转
+        vel_pid.target = 50.0f; 
+        float target_Vq = PID_Compute(&vel_pid, speed_now);
+        float target_Vd = 0.0f;
+
+        // 4. FOC 变换
+        float s = sinf(elec_angle);
+        float c = cosf(elec_angle);
+        float Valpha = target_Vd * c - target_Vq * s;
+        float Vbeta  = target_Vd * s + target_Vq * c;
+
+        // 5. 输出 SVPWM
+        SVPWM_Output_Standard(Valpha, Vbeta);
 
 //--------------------------------------------
         TIM1->BDTR |= TIM_BDTR_MOE; // 强制开启主输出使能

@@ -1,4 +1,11 @@
 #include "as5047p.h"
+//===============================================
+//
+//===============================================
+// 预先计算好的读取 ANGLECOM 寄存器的指令 (包含校验位和读位)
+// 地址 0x3FFF (ANGLECOM), 读位 0x4000, 校验位计算后 Bit15=1 -> 0xFFFF
+#define READ_ANGLE_CMD 0xFFFF
+//------------------------------------------------------------
 /**
  * @brief 极短延迟以适配 170MHz 主频
  */
@@ -104,6 +111,46 @@ uint16_t AS5047P_ReadRegister(uint16_t addr) {
     // 3. 必须发送两次：第一次发送地址，第二次获取数据
     SPI_Transfer(command); 
     return SPI_Transfer(command);
+}
+
+/**
+ * @brief 极速版模拟 SPI，专门为 15kHz FOC 优化
+ * 耗时控制在 5-8us 左右
+ */
+__attribute__((always_inline)) inline uint16_t AS5047P_Transfer_Fast(uint16_t data) {
+    uint16_t read_val = 0;
+    
+    AS_NSS_L;
+    // 去掉原来的 200 次 delay，AS5047P 的 tCSN 只需要 10ns
+    for(volatile int d = 0; d < 5; d++); 
+
+    for (int i = 15; i >= 0; i--) {
+        // SCK 初始为低 (Mode 1: CPOL=0, CPHA=1)
+        if (data & (1U << i)) AS_MOSI_H; else AS_MOSI_L;
+        
+        AS_SCK_H; // 芯片在上升沿采样 MOSI
+        // 缩短延时，G431 170MHz 下 3-5 次循环足以满足 10MHz 速率
+        for(volatile int d = 0; d < 3; d++); 
+
+        read_val <<= 1;
+        if (AS_MISO_IN) read_val |= 0x01; 
+
+        AS_SCK_L; // 芯片在下降沿更新 MISO
+        for(volatile int d = 0; d < 3; d++); 
+    }
+    
+    AS_NSS_H;
+    return read_val;
+}
+
+/**
+ * @brief 在 FOC 中断中调用的函数
+ */
+uint16_t FOC_ReadAngle_Optimized(void) {
+    // 每次中断只读写一次
+    // 返回的是上一次中断时发送 READ_ANGLE_CMD 后产生的角度数据
+    uint16_t raw = AS5047P_Transfer_Fast(READ_ANGLE_CMD);
+    return (raw & 0x3FFF); 
 }
 
 

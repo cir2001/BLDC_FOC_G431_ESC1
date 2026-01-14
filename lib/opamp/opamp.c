@@ -46,7 +46,7 @@ void OPAMP_Init_Registers(void) {
     for(volatile int i=0; i<10000; i++); // 简易延迟，确保电路稳定
 
     // 7. 打印验证
-    printf("OP1 CSR: 0x%08lX\r\n", OPAMP1->CSR);
-    printf("OP2 CSR: 0x%08lX\r\n", OPAMP2->CSR);
-    printf("OP3 CSR: 0x%08lX\r\n", OPAMP3->CSR);
+    // printf("OP1 CSR: 0x%08lX\r\n", OPAMP1->CSR);
+    // printf("OP2 CSR: 0x%08lX\r\n", OPAMP2->CSR);
+    // printf("OP3 CSR: 0x%08lX\r\n", OPAMP3->CSR);
 }

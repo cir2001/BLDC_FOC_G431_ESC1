@@ -25,7 +25,9 @@ void AS5047P_Init(void);
 uint16_t AS5047P_GetAngle(void);
 uint16_t SPI_Transfer(uint16_t data);
 uint16_t AS5047P_ReadRegister(uint16_t addr);
+uint16_t FOC_ReadAngle_Optimized(void);
 
+uint16_t AS5047P_Transfer_Fast(uint16_t data);
 
 #endif /* __AS5047P_H */
 

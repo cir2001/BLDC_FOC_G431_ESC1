@@ -17,6 +17,23 @@ PID_Controller vel_pid = {
     .integral_limit = 0.2f // 积分限幅，防止静止时积分过大
 };
 
+// 电流环 PID 参数初始化 (需要根据电机阻抗调整，先给保守值)
+PID_Controller curr_pid_d = {
+    .Kp = 0.1f,           // 电流环 Kp 通常比速度环大
+    .Ki = 0.01f, 
+    .output_limit = 0.9f, // 最大输出电压比例 (0.0~1.0)
+    .integral_limit = 0.5f
+};
+
+PID_Controller curr_pid_q = {
+    .Kp = 0.1f,
+    .Ki = 0.01f,
+    .output_limit = 0.9f,
+    .integral_limit = 0.5f
+};
+//-----------------------------------------------
+//
+//-----------------------------------------------
 // 在中断中调用
 float calculate_speed_rad_s(float mech_angle) {
     // 1. 计算角度差 (弧度)
@@ -55,6 +72,24 @@ float PID_Compute(PID_Controller *pid, float measure) {
     float output = P_out + pid->integral + D_out;
     if (output > pid->output_limit) output = pid->output_limit;
     if (output < -pid->output_limit) output = -pid->output_limit;
+    
+    return output;
+}
+
+float PID_Compute_Current(PID_Controller *pid, float target, float measure) {
+    float error = target - measure;
+    
+    pid->integral += pid->Ki * error;
+    
+    // 抗积分饱和 (Anti-windup)
+    if (pid->integral > pid->integral_limit) pid->integral = pid->integral_limit;
+    else if (pid->integral < -pid->integral_limit) pid->integral = -pid->integral_limit;
+    
+    float output = (pid->Kp * error) + pid->integral;
+    
+    // 输出限幅
+    if (output > pid->output_limit) output = pid->output_limit;
+    else if (output < -pid->output_limit) output = -pid->output_limit;
     
     return output;
 }

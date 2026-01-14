@@ -51,6 +51,12 @@
 #include <stdio.h>
 #include "align.h"
 #include "button.h"
+#include "opamp.h"
+#include "control.h"
+#include "adc_foc.h"
+#include <stdlib.h>
+//-----------------------------------------
+
 //-----------------------------------------
 uint16_t my_zero_offset = 0;
 //-----------------------------------------
@@ -68,6 +74,7 @@ volatile uint32_t led_tick = 0;
 
 extern uint16_t current_raw;
 extern float elec_angle;
+extern float offset_u, offset_v, offset_w;
 //-----------------------------------------
 int main(void) {
     SCB->CPACR |= ((3UL << 10*2) | (3UL << 11*2));
@@ -88,22 +95,73 @@ int main(void) {
     LED_Init(); // 初始化LED
     Button_Init(); // 初始化按键
 
-    TIM1_PWM_Init(5666);
+    // 2. 驱动层初始化
+    TIM1_PWM_Init(5666);     // PWM 频率设置
+    printf("TIM1_PWM_Init Done...\r\n");
+    delay_ms(100);
 
-    // 等待用户准备好 (可选：按下 PC10 按钮再开始)
-    // 根据手册 Table 4, PC10 是用户按钮 
-    printf("Press User Button to start Alignment...\r\n");
-    while((GPIOC->IDR & (1U << 10))); // 等待按钮按下 (低电平触发)
+    ADC_Init_Registers();    // 2. 再开启 ADC (这个函数你需要补上)
+    printf("ADC Initialized.\r\n");
+    delay_ms(100);
 
-    // 执行电角度校准，获取零位偏移
-    // 这个函数会强行给电机通电并对齐
-    my_zero_offset = FOC_Align_Sensor();
-    printf("zero_offset: %d\r\n", my_zero_offset);
+    OPAMP_Init_Registers();  // 1. 先开启运放
+    printf("OPAMP Initialized.\r\n");
+    delay_ms(100);
 
-    // 3. 校准完后再开启中断
-    TIM1->SR = ~TIM_SR_UIF;     // 先清除可能的悬挂标志位
-    TIM1->DIER |= TIM_DIER_UIE; // 正式开启中断
+    printf("\r\n[OPAMP] Forced Config After Init:\r\n");
+    printf("OP1: 0x%08lX   OP2: 0x%08lX   OP3: 0x%08lX\r\n",
+       OPAMP1->CSR, OPAMP2->CSR, OPAMP3->CSR);
 
+
+    // 3. 电流零位校准 (零电流偏置)
+    // 此时 PWM 还没输出，电机电流为 0，正是采集 1.65V 偏置（约2048）的最佳时机 
+    Calibrate_Current_Offset();
+    printf("Current Offset Calibrated.\r\n");
+    delay_ms(100);
+
+    printf("[OPAMP] After Current Calibration:\r\n");
+    printf("OP1: 0x%08lX   OP2: 0x%08lX   OP3: 0x%08lX\r\n",
+           OPAMP1->CSR, OPAMP2->CSR, OPAMP3->CSR);
+
+    printf("[Test] Reading pure zero-current reference before hardware trigger...\r\n");
+
+    delay_ms(20);  // 等待模拟稳定
+   // 强制软件触发注入组一次（读取当前零电流 raw 值）
+    ADC1->CR |= ADC_CR_JADSTART;
+    ADC2->CR |= ADC_CR_JADSTART;
+
+    // 等待 JEOC 标志（注入转换完成）
+    while (!(ADC1->ISR & ADC_ISR_JEOC));
+    while (!(ADC2->ISR & ADC_ISR_JEOC));
+
+    // 读取数据
+    uint32_t ref_U = ADC1->JDR1;
+    uint32_t ref_V = ADC2->JDR1;
+    uint32_t ref_W = ADC2->JDR2;
+
+    // 打印参考值（可用于对比或手动验证）
+    printf("Pure Zero-Current Ref (before trigger): U=%lu V=%lu W=%lu\r\n", ref_U, ref_V, ref_W);
+
+    // 可选：与校准 offsets 对比，检查是否一致
+    printf("Offsets from calib: U=%.2f V=%.2f W=%.2f\r\n", offset_u, offset_v, offset_w);
+
+    // 继续后面的代码...
+
+    // 启动 ADC 硬件触发（TIM1_TRGO2 触发注入组）
+    ADC1->CR |= ADC_CR_JADSTART;
+    ADC2->CR |= ADC_CR_JADSTART;
+
+    // 开启下桥臂短路模式
+    TIM1->CCR1 = 0; 
+    TIM1->CCR2 = 0;
+    TIM1->CCR3 = 0;
+    TIM1->CCER |= (TIM_CCER_CC1NE | TIM_CCER_CC2NE | TIM_CCER_CC3NE); 
+    TIM1->BDTR |= TIM_BDTR_MOE; 
+
+    printf("[System] Testing Mode: Low-side FETs Shorted.\r\n");
+    printf("[System] Rotate the motor manually to see current swings!\r\n");
+
+uint32_t count = 0;
 // --- 主循环 ---
     while (1) 
     {
@@ -114,40 +172,27 @@ int main(void) {
             led_tick = 0;
             //LED0_TOGGLE();      // 翻转LED0
         }
+        if (ADC2->ISR & ADC_ISR_JEOC) 
+        {
+            float iu = (float)ADC1->JDR1 - offset_u;
+            float iv = (float)ADC2->JDR1 - offset_v;
+            float iw = (float)ADC2->JDR2 - offset_w;
 
-        // u16 error_reg = AS5047P_ReadRegister(0x3FFC); // 读取错误寄存器测试
-        // printf("Error Register: 0x%04X\r\n", error_reg);    
-        
-        // delay_ms(100);
-        // uint16_t raw = AS5047P_GetAngle();
-        // uint16_t angle_14bit = current_raw & 0x3FFF; // 强制提取 14 位角度
-        // float deg = (float)(angle_14bit * 360.0f / 16384.0f);
-        // printf("Angle: %5d | Deg: %d.%02d\r\n",angle_14bit,(int)deg,(int)((deg - (int)deg) * 100));
+            float i_sum = iu + iv + iw;
 
-        // printf("Angle: %5d | elec_angle: %d.%02d\r\n",current_raw,(int)elec_angle,(int)((elec_angle - (int)elec_angle) * 100));
+            // 4. 打印 (请仔细检查这里的变量名顺序！)
+            if (count++ >= 10000) 
+            {
+                // 这里的参数必须是 iu, iv, iw，而不是 offset_u...
+                printf("U:%.1f V:%.1f W:%.1f | Sum:%.1f\r\n", iu, iv, iw, i_sum);
+                count = 0;
+            }
 
-        // if (GPIOB->IDR & (1U << 7)) printf("MISO is HIGH\r\n");
-        // else printf("MISO is LOW\r\n");
-        // delay_ms(500);
-        
-        // uint16_t current_raw = AS5047P_GetAngle();
-        // float elec_angle = Update_Electrical_Angle(current_raw, my_zero_offset);
-
-        // printf("elec_angle: %d.%03d rad\r\n",(int)elec_angle,(int)((elec_angle - (int)elec_angle) * 1000));
-        //printf("elec_angle: %d.%03d rad\r\n",(int)angle,(int)((angle - (int)angle) * 1000));
-        // 只有角度发生较大变化时才打印，或者降低打印频率
-       
-
-        // uint16_t error_reg = SPI_Transfer(0x4000 | 0x3FFC); 
-        // printf("Error Register: 0x%04X\r\n", error_reg);    
-
-        //printf("System Running...\r\n");
-
-        //delay_ms(100);
-    }
+            // 5. 清除标志位
+            ADC1->ISR |= ADC_ISR_JEOC;
+            ADC2->ISR |= ADC_ISR_JEOC;
+        }
+     }
 }
-
-
-
 
 

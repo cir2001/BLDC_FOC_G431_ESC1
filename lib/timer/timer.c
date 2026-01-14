@@ -4,6 +4,8 @@
 #include <math.h>
 #include "align.h"
 #include "control.h"
+#include "math.h"
+#include "adc_foc.h"
 
 //////////////////////////////////////////////////////////////////////////////////	 
 //
@@ -35,7 +37,7 @@ int16_t iMotorA_Encoder,iMotorB_Encoder,iMotorC_Encoder;
 long int iMotorAPulseTotle,iMotorBPulseTotle,iMotorCPulseTotle;
 
 u8 timer2_Counter;
-extern uint16_t my_zero_offset;
+
 
 u16 Timer1_Counter = 0;
 
@@ -45,6 +47,12 @@ float open_loop_angle = 0.0f;
 float test_theta = 0.0f;
 
 extern PID_Controller vel_pid;
+extern uint16_t my_zero_offset;
+
+float offset_u, offset_v, offset_w;
+// 用于调试监控的变量
+float last_Iq = 0.0f;
+float last_Id = 0.0f;
 //==============================================
 // TIM1 更新中断服务函数
 //==============================================
@@ -60,108 +68,71 @@ void TIM1_UP_TIM16_IRQHandler(void)
             Timer1_Counter = 0;
             LED0_TOGGLE();      // 翻转LED0
         }
-//--------- 开环测试-------------------------
-        // static float ol_angle = 0.0f;
-        // ol_angle += 0.003f; // 极低速步进
-        // if(ol_angle > 2.0f * 3.14159f) ol_angle = 0;
+// --- 1. 获取转子位置 (角度) ---
+        // uint16_t raw_angle = AS5047P_GetAngle();
+        // if (raw_angle == 0xFFFF) return; // SPI通信错误处理
 
-        // float U_max = 0.2f; // 占空比幅值 (20%)
-        
-        // // 直接计算三相占空比，跳过 SVPWM 扇区逻辑
-        // float duty_u = 0.5f + U_max * sinf(ol_angle);
-        // float duty_v = 0.5f + U_max * sinf(ol_angle - 2.0f/3.0f*3.14159f);
-        // float duty_w = 0.5f + U_max * sinf(ol_angle + 2.0f/3.0f*3.14159f);
-
-        // // 写入寄存器 (假设 ARR = 5666)
-        // TIM1->CCR1 = (uint16_t)(duty_u * 5666.0f);
-        // TIM1->CCR2 = (uint16_t)(duty_v * 5666.0f);
-        // TIM1->CCR3 = (uint16_t)(duty_w * 5666.0f);
-//------- 开环测试 end -----------------------
-//------- FOC 测试 -----------------------
-//--- 不需要再进行 2*PI - elec_angle 的取反操作
-        // //1. 获取编码器角度
-        // uint16_t raw = AS5047P_GetAngle();
-        // if(raw == 0xFFFF) return;
-
-        // // 2. 获取电角度 (保持成功的 Update_Electrical_Angle 逻辑)
-        // float elec_angle = Update_Electrical_Angle(raw, my_zero_offset);
-
-        // // 3. 设定转矩 (Vq)
-        // // 注意：如果你之前 SPWM 顺时针转，target_Vq 设为正值通常也是顺时针
-        // float target_Vq = -0.3f; 
-        // float target_Vd = 0.0f;
-
-        // // 4. 修正后的反 Park 变换
-        // // 我们给角度补偿 1.5708 rad (90度)，以匹配你 SPWM 的坐标系
+        // // 计算电角度 (elec_angle)
+        // float elec_angle = Update_Electrical_Angle(raw_angle, my_zero_offset);
         // float s = sinf(elec_angle);
         // float c = cosf(elec_angle);
 
-        // // 这是 FOC 的灵魂公式：将 DQ 轴转换回 Alpha/Beta 轴
-        // // float Valpha = target_Vd * c - target_Vq * s;
-        // // float Vbeta  = target_Vd * s + target_Vq * c;
+        // // --- 2. 获取相电流反馈 (力矩感知) ---
+        // // 注意：由于 RCR=1，进入此中断时 ADC 转换已在波谷完成
+        // float iu = ((float)ADC1->JDR1 - offset_u) * I_COEFF;
+        // float iv = ((float)ADC2->JDR1 - offset_v) * I_COEFF;
+        // // float iw = ((float)ADC1->JDR2 - offset_w) * I_COEFF; // 可选读 W 相
+
+        // // --- 3. 电流正向变换 (得到实时力矩 Iq) ---
+        // // 克拉克变换 (Clarke)
+        // float i_alpha = iu;
+        // float i_beta  = 0.5773503f * (iu + 2.0f * iv);
+
+        // // 派克变换 (Park) -> 得到实时的 Id 和 Iq (即力矩)
+        // last_Id = i_alpha * c + i_beta * s;
+        // last_Iq = -i_alpha * s + i_beta * c; 
+
+        // // --- 4. 速度环 PID 控制 (产生 Vq) ---
+        // // 计算机械角度用于速度反馈
+        // float mech_angle = (float)raw_angle * (2.0f * 3.14159265f / 16384.0f);
+        // float speed_now = calculate_speed_rad_s(mech_angle);
         
-        // float Valpha = -target_Vq*s; 
-        // float Vbeta = target_Vq*c;
+        // // PID 计算：输入速度误差 -> 输出目标 Vq 电压
+        // float target_Vq = PID_Compute(&vel_pid, speed_now);
+        // float target_Vd = 0.0f; // D 轴电压通常设为 0
 
-        // SVPWM_Output_Standard(Valpha, Vbeta);
-//------- FOC 测试 end -----------------------
-//------- 闭环测试 -----------------------
-//--- 需要进行 2*PI - elec_angle 的取反操作
-        // 1. 读取编码器
-        // uint16_t raw = AS5047P_GetAngle();
-        // if(raw == 0xFFFF) return;
+        // // --- 5. 电压反向变换 (从 Vd/Vq 到 Valpha/Vbeta) ---
+        // // 反派克变换 (Inverse Park)
+        // float Valpha = target_Vd * c - target_Vq * s;
+        // float Vbeta  = target_Vd * s + target_Vq * c;
 
-        // // 2. 获取当前电角度（已取反）
-        // float elec_angle = Update_Electrical_Angle(raw, my_zero_offset);
-
-        // // 3. 闭环控制：在当前角度基础上超前 90 度 (1.5708 rad)
-        // // 这是产生最大转矩 (Q轴) 的位置
-        // float theta_feedback = elec_angle + 1.5708f; 
-        
-        // float V_mag = 0.25f; // 先给一个小一点的电压，防止剧烈震动
-        // float duty_u = 0.5f + V_mag * sinf(theta_feedback);
-        // float duty_v = 0.5f + V_mag * sinf(theta_feedback - 2.0944f);
-        // float duty_w = 0.5f + V_mag * sinf(theta_feedback + 2.0944f);
-
-        // // 4. 写入寄存器 (ARR=5666)
-        // TIM1->CCR1 = (uint16_t)(duty_u * 5666.0f);
-        // TIM1->CCR2 = (uint16_t)(duty_v * 5666.0f);
-        // TIM1->CCR3 = (uint16_t)(duty_w * 5666.0f);
-//------- 闭环测试 end-----------------------
-//------- 标准 SVPWM 开环测试-----------------
-        // test_theta += 0.0005f; // 步进
-        // if(test_theta > 6.28318f) test_theta -= 6.28318f;
-
-        // float V_mag = 0.2;
-        // // 开环直接生成 Alpha/Beta
-        // float Valpha = V_mag * cosf(test_theta);
-        // float Vbeta  = V_mag * sinf(test_theta);
-
+        // // --- 6. SVPWM 最终输出 ---
+        // // 使用你之前跑通的 Min-Max 标准 SVPWM 函数
         // SVPWM_Output_Standard(Valpha, Vbeta);
 //------- 标准 SVPWM 开环测试 end -----------------
 //---- 速度 PID ----------------------------------
-        // 1. 传感器获取
-        uint16_t raw = AS5047P_GetAngle();
-        float mech_angle = (float)raw * (2.0f * 3.14159265f / 16384.0f); // 机械角度
-        float elec_angle = Update_Electrical_Angle(raw, my_zero_offset);
+        // // 1. 传感器获取
+        // uint16_t raw = AS5047P_GetAngle();
+        // float mech_angle = (float)raw * (2.0f * 3.14159265f / 16384.0f); // 机械角度
+        // float elec_angle = Update_Electrical_Angle(raw, my_zero_offset);
 
-        // 2. 计算实时滤波速度
-        float speed_now = calculate_speed_rad_s(mech_angle);
+        // // 2. 计算实时滤波速度
+        // float speed_now = calculate_speed_rad_s(mech_angle);
 
-        // 3. PID 计算得出 Vq
-        // 假设你想要电机以 10 rad/s 的速度旋转
-        vel_pid.target = 50.0f; 
-        float target_Vq = PID_Compute(&vel_pid, speed_now);
-        float target_Vd = 0.0f;
+        // // 3. PID 计算得出 Vq
+        // // 假设你想要电机以 10 rad/s 的速度旋转
+        // vel_pid.target = 50.0f; 
+        // float target_Vq = PID_Compute(&vel_pid, speed_now);
+        // float target_Vd = 0.0f;
 
-        // 4. FOC 变换
-        float s = sinf(elec_angle);
-        float c = cosf(elec_angle);
-        float Valpha = target_Vd * c - target_Vq * s;
-        float Vbeta  = target_Vd * s + target_Vq * c;
+        // // 4. FOC 变换
+        // float s = sinf(elec_angle);
+        // float c = cosf(elec_angle);
+        // float Valpha = target_Vd * c - target_Vq * s;
+        // float Vbeta  = target_Vd * s + target_Vq * c;
 
-        // 5. 输出 SVPWM
-        SVPWM_Output_Standard(Valpha, Vbeta);
+        // // 5. 输出 SVPWM
+        // SVPWM_Output_Standard(Valpha, Vbeta);
 
 //--------------------------------------------
         TIM1->BDTR |= TIM_BDTR_MOE; // 强制开启主输出使能
@@ -174,69 +145,64 @@ void TIM1_UP_TIM16_IRQHandler(void)
 //==============================================
 void TIM1_PWM_Init(u16 arr)
 {
-    // 1. 开启 GPIOA, GPIOB, GPIOC 和 TIM1 时钟
+    // 1. 时钟开启
     RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN | RCC_AHB2ENR_GPIOBEN | RCC_AHB2ENR_GPIOCEN;
     RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
 
+    // 2. 引脚速度
     GPIOA->OSPEEDR |= (3U << (8 * 2)) | (3U << (9 * 2)) | (3U << (10 * 2)) | (3U << (12 * 2));
     GPIOB->OSPEEDR |= (3U << (15 * 2));
     GPIOC->OSPEEDR |= (3U << (13 * 2));
 
-    // 2. 配置引脚复用 (根据 UM2516 Table 4 定义)
-    // PA8, PA9, PA10 -> AF6 (TIM1_CH1/2/3)
+    // 3. 复位 AF 映射 (AF6 为 TIM1)
     GPIO_AF_Set(GPIOA, 8, 6); 
     GPIO_AF_Set(GPIOA, 9, 6); 
     GPIO_AF_Set(GPIOA, 10, 6);
-    
-    // PC13 -> AF4 (TIM1_CH1N) [手册规定映射]
     GPIO_AF_Set(GPIOC, 13, 4); 
-    // PA12 -> AF6 (TIM1_CH2N) [手册规定映射]
     GPIO_AF_Set(GPIOA, 12, 6); 
-    // PB15 -> AF4 (TIM1_CH3N) [手册规定映射]
     GPIO_AF_Set(GPIOB, 15, 4);
 
-    // 4. 定时器基础设置
+    // 4. 基础设置
     TIM1->ARR = arr;
     TIM1->PSC = 0;
+    
+    // [关键] 5. 重复计数器设为 1，确保只在波谷产生 Update 事件
+    TIM1->RCR = 1; 
 
-    // 5. 设置中心对齐模式 1 (向上/向下计数均在达到比较值时翻转)
-    // 这种模式下采样最准
+    // 6. 中心对齐模式 1
     TIM1->CR1 &= ~TIM_CR1_CMS;
     TIM1->CR1 |= (1 << TIM_CR1_CMS_Pos); 
 
-    // 6. 配置通道比较模式 (PWM模式1)
-    // CCMR1 对应 CH1, CH2; CCMR2 对应 CH3
-    // CCMR1 寄存器：控制 CH1 (低8位) 和 CH2 (高8位)
-    TIM1->CCMR1 &= ~(TIM_CCMR1_OC1M | TIM_CCMR1_OC2M);//先清除模式位再设置
-	TIM1->CCMR1 |= (6 << TIM_CCMR1_OC1M_Pos) | TIM_CCMR1_OC1PE; // CH1
-	TIM1->CCMR1 |= (6 << TIM_CCMR1_OC2M_Pos) | TIM_CCMR1_OC2PE; // CH2 对应 PA11
+    // 7. PWM 模式 1 配置
+    TIM1->CCMR1 &= ~(TIM_CCMR1_OC1M | TIM_CCMR1_OC2M);
+    TIM1->CCMR1 |= (6 << TIM_CCMR1_OC1M_Pos) | TIM_CCMR1_OC1PE;
+    TIM1->CCMR1 |= (6 << TIM_CCMR1_OC2M_Pos) | TIM_CCMR1_OC2PE;
+    TIM1->CCMR2 &= ~TIM_CCMR2_OC3M;
+    TIM1->CCMR2 |= (6 << TIM_CCMR2_OC3M_Pos) | TIM_CCMR2_OC3PE;
 
-	// CCMR2 寄存器：控制 CH3 (低8位) 和 CH4 (高8位)
-    TIM1->CCMR2 &= ~TIM_CCMR2_OC3M;//先清除模式位再设置
-	TIM1->CCMR2 |= (6 << TIM_CCMR2_OC3M_Pos) | TIM_CCMR2_OC3PE; // CH3 对应 PA12
+    // 8. 使能输出
+    TIM1->CCER |= (TIM_CCER_CC1E | TIM_CCER_CC1NE | TIM_CCER_CC2E | TIM_CCER_CC2NE | TIM_CCER_CC3E | TIM_CCER_CC3NE);
 
-    // 7. 使能互补输出与极性
-    TIM1->CCER |= (TIM_CCER_CC1E | TIM_CCER_CC1NE);
-    TIM1->CCER |= (TIM_CCER_CC2E | TIM_CCER_CC2NE);
-    TIM1->CCER |= (TIM_CCER_CC3E | TIM_CCER_CC3NE);
-
-    // 8. 死区时间配置 (Dead-time)
-    // G431 170MHz 主频，设置 150 约等于 880ns，足以保护大部分 MOSFET
+    // 9. 死区与主输出
     TIM1->BDTR &= ~TIM_BDTR_DTG;
     TIM1->BDTR |= 100; 
-
-    // 9. 开启主输出 (MOE) 并启动定时器
     TIM1->BDTR |= TIM_BDTR_MOE; 
+
+    // [关键] 10. 触发信号映射：Update -> TRGO2
+    // 用于触发 ADC 注入组 (JEXTSEL=36)
+    TIM1->CR2 &= ~TIM_CR2_MMS2;
+    TIM1->CR2 |= (2U << 20); // MMS2 = 0010: 仅在 Underflow (波谷) 产生 TRGO2
+
+    // 11. 启动
+    TIM1->EGR |= TIM_EGR_UG;   // 更新寄存器
     TIM1->CR1 |= TIM_CR1_CEN;
     
-    // 10. 触发信号：Update事件触发 TRGO (用于 ADC 同步采样)
-    TIM1->CR2 &= ~TIM_CR2_MMS;
-    TIM1->CR2 |= (2 << TIM_CR2_MMS_Pos);
-
-    // 在 TIM1_PWM_Init 函数末尾添加
-    //TIM1->DIER |= TIM_DIER_UIE; // 开启更新中断
-    NVIC_SetPriority(TIM1_UP_TIM16_IRQn, 0); // 设置最高优先级
+    // 12. 中断配置
+    NVIC_SetPriority(TIM1_UP_TIM16_IRQn, 0); 
     NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
+
+    // 开启 TIM1 的更新中断 (Update Interrupt Enable)
+    TIM1->DIER |= TIM_DIER_UIE;
 }
 //-----------------------------------------------
 //  * @brief 反 Park 变换

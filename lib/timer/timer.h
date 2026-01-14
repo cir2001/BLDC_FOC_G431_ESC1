@@ -15,7 +15,7 @@
 
 #define COUNTER_RESET 0			//0
 
-#define PWM_ARR 42500.0f
+#define PWM_ARR 5666.0f
 
 // 1. 先定义结构体
 typedef struct {

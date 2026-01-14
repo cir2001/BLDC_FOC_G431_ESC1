@@ -110,7 +110,7 @@ int main(void) {
     Button_Init(); // 初始化按键
 
     // 2. 驱动层初始化
-    TIM1_PWM_Init(42500);     // PWM 频率设置
+    TIM1_PWM_Init(5666);     // PWM 频率设置
     printf("TIM1_PWM_Init Done...\r\n");
     delay_ms(100);
 
@@ -155,16 +155,16 @@ int main(void) {
     ADC1->CR |= ADC_CR_JADSTART;
     ADC2->CR |= ADC_CR_JADSTART;
    // 1. 设定目标值
-    target_iq = 0.5f; 
+    target_iq = 1.0f; 
 
     // 2. 设定 ID 环 (目标电流 0)
-    pid_id.kp = 0.1f;   
-    pid_id.ki = 0.01f; 
+    pid_id.kp = 0.3f;   
+    pid_id.ki = 0.05f; 
     pid_id.output_limit = 3.0; // 这里的 limit 建议对应 SVPWM 的 v_max (0.8)
 
     // 3. 设定 IQ 环 (驱动电机)
-    pid_iq.kp = 0.1f;   
-    pid_iq.ki = 0.01f; 
+    pid_iq.kp = 0.3f;   
+    pid_iq.ki = 0.05f; 
     pid_iq.output_limit = 3.0f; 
 
     // 4. 重复检查零位 (确保 my_zero_offset 已经正确赋值)
@@ -187,8 +187,8 @@ int main(void) {
         {
             // 暂时不用关中断，直接打原始变量看一眼
             // printf("ID:%.2f|IQ:%.2f|Th:%.2f\r\n", debug_id, debug_iq, debug_theta);
-            printf("debug_iq:%.2f\r\n", debug_iq);
-            // printf("raw_diff:%5d\r\n",raw_diff);
+            // printf("debug_iq:%.2f\r\n", debug_iq);
+            // // printf("raw_diff:%5d\r\n",raw_diff);
             interrupt_flag_count = 0;
         }
         //  uint16_t raw = FOC_ReadAngle_Optimized();

@@ -142,7 +142,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         // 定义两个静态变量做滤波
         static float i_d_f = 0.0f;
         static float i_q_f = 0.0f;
-        float lpf_alpha = 0.15f;// 滤波系数，越小越平滑，但响应越慢
+        float lpf_alpha = 0.05f;// 滤波系数，越小越平滑，但响应越慢
 
         // 在 Park 变换后
         i_d_f = (i_d * lpf_alpha) + (i_d_f * (1.0f - lpf_alpha));
@@ -281,9 +281,9 @@ void SVPWM_Output_Standard(float Valpha, float Vbeta)
     float Tc = (U_w - V_offset) + 0.5f;
 
     // 5. 写入寄存器 (ARR = 5666)
-    TIM1->CCR1 = (uint16_t)(Ta * 42500.0f);
-    TIM1->CCR2 = (uint16_t)(Tb * 42500.0f);
-    TIM1->CCR3 = (uint16_t)(Tc * 42500.0f);
+    TIM1->CCR1 = (uint16_t)(Ta * (float)TIM1->ARR);
+    TIM1->CCR2 = (uint16_t)(Tb * (float)TIM1->ARR);
+    TIM1->CCR3 = (uint16_t)(Tc * (float)TIM1->ARR);
 }
 
 float PID_Calc(PID_Controller* pid, float target, float current) {

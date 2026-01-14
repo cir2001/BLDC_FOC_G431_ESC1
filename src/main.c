@@ -155,7 +155,7 @@ int main(void) {
     ADC1->CR |= ADC_CR_JADSTART;
     ADC2->CR |= ADC_CR_JADSTART;
    // 1. 设定目标值
-    target_iq = 1.0f; 
+    target_iq = -1.0f; 
 
     // 2. 设定 ID 环 (目标电流 0)
     pid_id.kp = 0.3f;   

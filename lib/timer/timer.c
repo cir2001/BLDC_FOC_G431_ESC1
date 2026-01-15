@@ -45,16 +45,10 @@ extern float target_iq;
 // 变量声明
 //-----------------------------------------------
 u16 Timer1_Counter = 0;
-
-float theta_elec = 0.0f;
-
-// 用于调试监控的变量
-float last_Iq = 0.0f;
-float last_Id = 0.0f;
 //--------------------------------------------
 float i_alpha, i_beta;      // Clark 变换结果
 float i_d, i_q;            // Park 变换结果
-float theta_elec;          // 电角度 (弧度)
+float theta_elec = 0.0f;          // 电角度 (弧度)
 float sin_t, cos_t;        // 角度的正余弦值
 
 float elec_angle;
@@ -87,8 +81,6 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
             // --- D. 补偿 90 度相位差 (解决“吸住不转”的关键) ---
             // FOC 中，磁场需领先转子 90 度才能产生转矩
-            // 修改这行补偿值，每次烧录一个，看看哪个能让电机“丝滑”转动
-
             // elec_angle += 1.57f;   // 尝试 90 度
             // elec_angle -= 1.57f;   // 尝试 90 度
 
@@ -106,22 +98,13 @@ void TIM1_UP_TIM16_IRQHandler(void)
         while(!(ADC2->ISR & ADC_ISR_JEOC));
 
         // 4. 读取电流并去偏置 (iu + iv + iw = 0)
-        // float iu = -((float)ADC1->JDR1 - offset_u);
-        // float iv = -((float)ADC2->JDR1 - offset_v);
-        // float iw = -((float)ADC2->JDR2 - offset_w);
-
-        // float iu = ((float)ADC1->JDR1 - offset_u);
-        // float iv = ((float)ADC2->JDR1 - offset_v);
-        // float iw = ((float)ADC2->JDR2 - offset_w);
-        
-        // 1. 读取并去偏置
         float raw_u = (float)ADC1->JDR1 - offset_u;
         float raw_v = (float)ADC2->JDR1 - offset_v;
         float raw_w = (float)ADC2->JDR2 - offset_w;
 
-        // 2. 核心修正：缩放到安培量级
+        // 缩放到安培量级
         // B-G431 的放大倍数下，大约 200 个单位对应 1A
-        // 我们先除以 200.0f，让 i_q 回到 1.0 左右的正常范围
+        // 除以 200.0f，让 i_q 回到 1.0 左右的正常范围
         float iu = raw_u / 200.0f; 
         float iv = raw_v / 200.0f;
         float iw = raw_w / 200.0f;
@@ -172,7 +155,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         // LED 翻转逻辑
         if (Timer1_Counter >= 7500) { // 15kHz下，7500次是500ms
             Timer1_Counter = 0;
-            LED0_TOGGLE();
+            // LED0_TOGGLE();
         }
     }
 }

@@ -9,9 +9,8 @@ float i_u = 0, i_v = 0, i_w = 0;
 /**
  * @brief ADC1/2 寄存器初始化 (注入组 + TIM1触发)
  */
-void ADC_Init_Registers(void) {
-    printf("\r\n[ADC System] Starting Final Robust Initialization...\r\n");
-
+void ADC_Init_Registers(void) 
+{
     // 1. 开启时钟
     RCC->AHB2ENR |= RCC_AHB2ENR_ADC12EN;
     
@@ -28,37 +27,25 @@ void ADC_Init_Registers(void) {
     ADC12_COMMON->CCR |= (1U << 16); // CKMODE = 01 (Sync HCLK/1)
     ADC12_COMMON->CCR |= (2U << 18); // PRESC = 0010 (4分频)
     
-    printf("[ADC System] 1. Clock set to Synchronous Mode (HCLK/4).\r\n");
-
     // 3. 开启调节器
     ADC1->CR &= ~(1U << 29); // DEEPPWD = 0
     ADC1->CR |= (1U << 28);  // ADVREGEN = 1
     ADC2->CR &= ~(1U << 29);
     ADC2->CR |= (1U << 28);
     delay_ms(10); 
-    printf("[ADC System] 2. Voltage Regulators enabled.\r\n");
 
     // 4. ADC1 校准 (增加手动复位确认)
-    printf("[ADC System] 3. Calibrating ADC1...\r\n");
     ADC1->CR &= ~ADC_CR_ADEN; // 确保 ADEN 为 0，否则校准必卡死
     ADC1->CR |= ADC_CR_ADCAL;
     
     uint32_t timeout = 2000000; // 足够长的手动超时
     while((ADC1->CR & ADC_CR_ADCAL) && timeout--); 
-    
-    if(timeout == 0) {
-        printf("[ADC System] ERROR: ADC1 Calibration STUCK! Check PLL settings.\r\n");
-        return; 
-    }
-    printf("[ADC System]    ADC1 Done.\r\n");
 
     // 5. ADC2 校准
-    printf("[ADC System] 4. Calibrating ADC2...\r\n");
     ADC2->CR &= ~ADC_CR_ADEN;
     ADC2->CR |= ADC_CR_ADCAL;
     timeout = 2000000;
     while((ADC2->CR & ADC_CR_ADCAL) && timeout--); 
-    printf("[ADC System]    ADC2 Done.\r\n");
 
     // 6. 开启 ADC 并等待就绪 (ADRDY)
     ADC1->ISR |= ADC_ISR_ADRDY; // 写 1 清除标志
@@ -68,7 +55,6 @@ void ADC_Init_Registers(void) {
     ADC2->ISR |= ADC_ISR_ADRDY;
     ADC2->CR  |= ADC_CR_ADEN;
     while(!(ADC2->ISR & ADC_ISR_ADRDY));
-    printf("[ADC System] 6. Both ADCs are READY.\r\n");
 
     // --- 采样时间配置 ---
     // ADC1: 通道 13 (Phase U)
@@ -94,9 +80,6 @@ void ADC_Init_Registers(void) {
             | (1U << 7)         // 允许外部触发
             | (16U << 9)        // JSQ1 = 通道 16 (OPAMP2 -> Phase V)
             | (18U << 15);      // JSQ2 = 通道 18 (OPAMP3 -> Phase W)
-
-    printf("[ADC System] 7. Injected sequences FIXED. READY FOR FOC.\r\n\r\n");
-
 }
 
 /**
@@ -113,8 +96,6 @@ void Calibrate_Current_Offset(void) {
 
     uint32_t sum_u = 0, sum_v = 0, sum_w = 0;
     const int samples = 1024;
-
-    printf("[Calib] Starting Current Offset Calibration...\r\n");
 
     // 关键：校准时必须临时关闭硬件触发 (JEXTEN = 0)，否则 JADSTART 无效
     ADC1->JSQR &= ~ADC_JSQR_JEXTEN;

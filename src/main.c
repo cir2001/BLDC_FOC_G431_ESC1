@@ -60,19 +60,11 @@
 //-----------------------------------------
 uint16_t my_zero_offset = 0;
 //-----------------------------------------
-// --- FOC 参数与变量定义 ---
-typedef struct {
-    float target_voltage_q;
-    float target_voltage_d;
-    float current_angle;
-    // ... 其他 PID 参数
-} FOC_Controller;
-
 PID_Controller pid_id;
 PID_Controller pid_iq;
-float target_iq = 0.0f;
+PID_Controller pid_speed;
 
-FOC_Controller foc;
+float target_iq = 0.0f;
 
 extern int16_t raw_diff;
 //-----------------------------------------
@@ -95,13 +87,8 @@ int main(void) {
     // 延时函数初始化
     delay_init(170); 
     uart2_init(921600); // USART2 初始化，波特率 115200
-    //printf("FOC Project Start! CPU Clock: 170MHz\r\n");
     AS5047P_Init();
     delay_ms(100);
-    // 连续读取两次错误寄存器以清除标志
-    // AS5047P_ReadRegister(0x0001); 
-    // delay_ms(1);
-    // AS5047P_ReadRegister(0x0001); 
 
     AS5047P_Transfer_Fast(0xFFFF);
     printf("Error Flag Cleared. Starting Angle Measurement...\r\n");
@@ -130,10 +117,9 @@ int main(void) {
     // 3. 电流零位校准 (零电流偏置)
     // 此时 PWM 还没输出，电机电流为 0，正是采集 1.65V 偏置（约2048）的最佳时机 
     Calibrate_Current_Offset();
-    printf("Current Offset Calibrated.\r\n");
     delay_ms(100);
 
-   // 强制软件触发注入组一次（读取当前零电流 raw 值）
+    //强制软件触发注入组一次（读取当前零电流 raw 值）
     ADC1->CR |= ADC_CR_JADSTART;
     ADC2->CR |= ADC_CR_JADSTART;
 
@@ -146,34 +132,23 @@ int main(void) {
     uint32_t ref_V = ADC2->JDR1;
     uint32_t ref_W = ADC2->JDR2;
 
-    // 打印参考值（可用于对比或手动验证）
-    printf("Pure Zero-Current Ref (before trigger): U=%lu V=%lu W=%lu\r\n", ref_U, ref_V, ref_W);
-
-    // 可选：与校准 offsets 对比，检查是否一致
-    printf("Offsets from calib: U=%.2f V=%.2f W=%.2f\r\n", offset_u, offset_v, offset_w);
-
-    ADC1->CR |= ADC_CR_JADSTART;
-    ADC2->CR |= ADC_CR_JADSTART;
-   // 1. 设定目标值
+    //设定目标值
     target_iq = -1.0f; 
 
-    // 2. 设定 ID 环 (目标电流 0)
+    //设定 ID 环 (目标电流 0)
     pid_id.kp = 0.3f;   
     pid_id.ki = 0.05f; 
-    pid_id.output_limit = 3.0; // 这里的 limit 建议对应 SVPWM 的 v_max (0.8)
+    pid_id.output_limit = 1.0f; // 这里的 limit 建议对应 SVPWM 的 v_max (0.8)
 
-    // 3. 设定 IQ 环 (驱动电机)
+    //设定 IQ 环 (驱动电机)
     pid_iq.kp = 0.3f;   
     pid_iq.ki = 0.05f; 
-    pid_iq.output_limit = 3.0f; 
+    pid_iq.output_limit = 1.0f; 
 
-    // 4. 重复检查零位 (确保 my_zero_offset 已经正确赋值)
-    printf("Ready to loop. Zero Offset: %d\r\n", my_zero_offset);
-
-    // 2. 开启中断
+    //开启中断
     TIM1->DIER |= TIM_DIER_UIE;
 
-    // 3. 最后开启主输出 (MOE)
+    //最后开启主输出 (MOE)
     // 提醒：开启这一行后，电机就会受 PID 控制了
     TIM1->BDTR |= TIM_BDTR_MOE; 
 
@@ -185,24 +160,14 @@ int main(void) {
     //-----------------------------------------------------
         if (interrupt_flag_count >= 150) 
         {
-            // 暂时不用关中断，直接打原始变量看一眼
-            // printf("ID:%.2f|IQ:%.2f|Th:%.2f\r\n", debug_id, debug_iq, debug_theta);
-            // printf("debug_iq:%.2f\r\n", debug_iq);
-            // // printf("raw_diff:%5d\r\n",raw_diff);
             interrupt_flag_count = 0;
         }
-        //  uint16_t raw = FOC_ReadAngle_Optimized();
-        // uint16_t angle_14bit = raw & 0x3FFF; // 强制提取 14 位角度
-        // float deg = (float)(angle_14bit * 360.0f / 16384.0f);
-        // printf("Angle: %5d | Deg: %d.%02d\r\n",angle_14bit,(int)deg,(int)((deg - (int)deg) * 100));
-
-
     //-----------------------------------------------------
         led_tick++;
         if (led_tick >= 1000000) // 每500ms翻转一次LED0
         {
             led_tick = 0;
-            LED0_TOGGLE();      // 翻转LED0
+            // LED0_TOGGLE();      // 翻转LED0
         }
      }
 }

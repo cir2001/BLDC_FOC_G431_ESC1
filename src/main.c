@@ -150,40 +150,39 @@ int main(void) {
            ADC1->JDR1, ADC2->JDR1, ADC2->JDR2);
 
     // 重要：需要开启才能自启动
-    TIM1->BDTR |= TIM_BDTR_MOE;
+    // TIM1->BDTR |= TIM_BDTR_MOE;
 
     // --- 速度环 (外环) ---
-    target_speed = 0.0f;      
-    pid_speed.kp = 0.0000018f;      // 速度环 Kp 通常较小
-    pid_speed.ki = 0.0f; 
-    pid_speed.output_limit = 1.0f; // 限制最大电流
+    target_speed = 2.0f;      
+    pid_speed.kp = 0.05f;      // 速度环 Kp 通常较小
+    pid_speed.ki = 0.08f; 
+    pid_speed.output_limit = 2.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    // target_iq = 0.0f;  
-
-    pid_id.kp = 0.03f;   pid_id.ki = 15.0f; 
+    pid_id.kp = 0.005f;   pid_id.ki = 5.0f; 
     pid_id.output_limit = 1.5; // 对应 SVPWM 最大电压 (1.0)
     
-    pid_iq.kp = 0.03f;   pid_iq.ki = 15.0f; 
+    pid_iq.kp = 0.005f;   pid_iq.ki = 5.0f; 
     pid_iq.output_limit = 1.5;
 
     // --- 第四步：执行【开机预对齐】逻辑 ---
-    FOC_PreAlign(0.3f, 1000);  // 锁死
+    // FOC_PreAlign(0.4f, 1000);  // 锁死
 
-    // 完全松开（确保电压输出 0）
-    Vd = 0.05f;
-    Vq = 0.0f;
-    FOC_SVPWM_Update(Vd, Vq, 0.0f);
-    delay_ms(200);  // 800ms 彻底松开
+    // // 完全松开（确保电压输出 0）
+    // Vd = 0.05f;
+    // Vq = 0.0f;
+    // FOC_SVPWM_Update(Vd, Vq, 0.0f);
+    // delay_ms(200);  // 800ms 彻底松开
 
     // --- 第五步：简单自动启动（扰动 + 冲击） ---
     // 先开启闭环
-    run_foc_flag = 1;
-
-    // 2. 立即大电流冲击（确保突破）
-    target_iq = 1.0f;  // 冲击电流
-    delay_ms(200);      // 600ms 长冲击
-    target_iq = 0.5f;   // 降回正常值
+    run_foc_flag = 0;
+    Vd = 0.5f;        // 直接给 0.5V 电压
+    Vq = 0.0f;
+    // 反向小脉冲 + 正向冲击（模拟手拨）
+    // target_iq = 1.0f;  // 正向冲击 1.2A
+    // delay_ms(500);
+    // target_iq = 0.3f;  // 降回正常
 
     // 3. 启动控制
     TIM1->DIER |= TIM_DIER_UIE;

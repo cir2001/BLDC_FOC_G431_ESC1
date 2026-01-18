@@ -57,6 +57,20 @@ void ADC_Init_Registers(void)
     ADC2->CR  |= ADC_CR_ADEN;
     while(!(ADC2->ISR & ADC_ISR_ADRDY));
 
+    // --- 新增：硬件过采样配置 (针对注入组) ---
+    // 目标：通过 8 倍过采样减小噪声，保持 12 位分辨率
+    // ADC1 配置
+    ADC1->CFGR2 &= ~(ADC_CFGR2_OVSR | ADC_CFGR2_OVSS | ADC_CFGR2_ROVSE | ADC_CFGR2_JOVSE); // 清零
+    ADC1->CFGR2 |= (2U << ADC_CFGR2_OVSR_Pos);   // OVSR = 010: 8倍过采样 (Ratio = 8x)
+    ADC1->CFGR2 |= (3U << ADC_CFGR2_OVSS_Pos);   // OVSS = 0011: 右移 3 位 (Shift = 3)
+    ADC1->CFGR2 |= ADC_CFGR2_JOVSE;              // JOVSE = 1: 开启注入组过采样
+
+    // ADC2 配置
+    ADC2->CFGR2 &= ~(ADC_CFGR2_OVSR | ADC_CFGR2_OVSS | ADC_CFGR2_ROVSE | ADC_CFGR2_JOVSE); // 清零
+    ADC2->CFGR2 |= (2U << ADC_CFGR2_OVSR_Pos);   // 8倍过采样
+    ADC2->CFGR2 |= (3U << ADC_CFGR2_OVSS_Pos);   // 右移 3 位
+    ADC2->CFGR2 |= ADC_CFGR2_JOVSE;              // 开启注入组过采样
+
     // --- 采样时间优化配置 ---
     // 目标：将采样时间压缩到 0.2us ~ 0.5us 左右
     // 2.5周期有时会导致采样阻抗不匹配，建议改为 6.5 周期 (010)

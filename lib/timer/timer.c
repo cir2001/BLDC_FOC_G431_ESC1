@@ -96,9 +96,10 @@ void TIM1_UP_TIM16_IRQHandler(void)
 {
     if(TIM1->SR & TIM_SR_UIF)
     {
-        // 1. 立即清除中断标志
+        // 立即清除中断标志
         TIM1->SR &= ~TIM_SR_UIF;
         Timer1_Counter++;
+
         // 1. 获取机械角度与电角度
         uint16_t angle_raw = FOC_ReadAngle_Optimized();
         if ((angle_raw & 0x4000) || angle_raw == 0x3FFF) return; 
@@ -107,18 +108,17 @@ void TIM1_UP_TIM16_IRQHandler(void)
         if (raw_diff < 0) raw_diff += 16384;
         
         float mech_angle = ((float)raw_diff / 16384.0f) * 6.2831853f;
-        // float elec_angle = 6.2831853f -(mech_angle * 7.0f); // 极对数 7
         float elec_angle = (mech_angle * 7.0f); // 极对数 7
-        // float elec_angle = 0.0f; // 强制设为 0 校准my_zero_offset
 
         debug_mech_angle = mech_angle;
 
         while(elec_angle >= 6.2831853f) elec_angle -= 6.2831853f;
         while(elec_angle < 0)           elec_angle += 6.2831853f;
 
-        // // 2. 速度环逻辑：15分频 (运行频率 1kHz)
+        // 2. 速度环逻辑：15分频 (运行频率 1kHz)
         // static uint16_t speed_cnt = 0;
-        // if (++speed_cnt >= 15) 
+        // speed_cnt++;
+        // if (speed_cnt >= 15) 
         // {
         //     speed_cnt = 0;
             
@@ -134,12 +134,14 @@ void TIM1_UP_TIM16_IRQHandler(void)
         //     actual_speed_filt = (instant_speed * 0.03f) + (actual_speed_filt * 0.97f);
         //     last_mech_angle = mech_angle;
 
-        //     // --- 速度 PID 计算 ---
-        //     // 速度环的输出就是 target_iq
-        //     // target_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
-        //     // target_id = 0.0f;
+        //     float base_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
+
+        //     // target_iq = base_iq;
         //     // target_iq = 0.3f;
+        //     // target_id = 0.0f;
         // }
+        target_iq = 0.0f;
+        target_id = 0.5f;
 
         // 每次中断都要确保启动注入组转换
         ADC1->CR |= ADC_CR_JADSTART;
@@ -166,14 +168,14 @@ void TIM1_UP_TIM16_IRQHandler(void)
         float sum_error = sum_filt * 0.3333333f;
 
         // 4. 补偿
-        float iu = (raw_u - sum_error) / -20.0f;
-        float iv = (raw_v - sum_error) / -20.0f;
-        float iw = (raw_w - sum_error) / -20.0f;
+        float iu = (raw_u - sum_error) / -10.0f;
+        float iv = (raw_v - sum_error) / -10.0f;
+        float iw = (raw_w - sum_error) / -10.0f;
 
         // 后续滤波、Clark/Park 不变
-        iu_filt = iu_filt*0.95f + iu*0.05f;
-        iv_filt = iv_filt*0.95f + iv*0.05f;
-        iw_filt = iw_filt*0.95f + iw*0.05f;
+        iu_filt = iu_filt*0.85f + iu*0.15f;
+        iv_filt = iv_filt*0.85f + iv*0.15f;
+        iw_filt = iw_filt*0.85f + iw*0.15f;
 
         debug_iu = iu;
         debug_iv = iv;
@@ -227,6 +229,9 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_Vq = Vq;
         debug_Vd = Vd;
 
+        // Vd = 0.0f; 
+        // Vq = 0.0f;
+
         float final_s = sinf(out_angle);
         float final_c = cosf(out_angle);
 
@@ -258,20 +263,21 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
             // printf("iq:%.2f, id:%.2f\r\n", debug_iq, debug_id);
 
-            // printf("iq:%.2f, id:%.2f,Vq:%.2f, Vd:%.2f\r\n", 
-            //         debug_iq, debug_id,debug_Vq, debug_Vd);
+            printf("iq:%.2f, id:%.2f,Vq:%.2f, Vd:%.2f\r\n", 
+                    debug_iq, debug_id,debug_Vq, debug_Vd);
 
-            // printf("Target:%.2f, Act:%.2f, Iq_Ref:%.2f, Iq_Act:%.2f\r\n", 
-            //         target_speed, actual_speed_filt, target_iq, debug_iq);
-
+            
             // printf("CCR4: %d, ARR: %d\n", TIM1->CCR4, TIM1->ARR);
 
             // printf("angle_raw: %d\r\n",angle_raw);
 
-        //     printf("elec_angle:%.2f, mech_angle:%.2f\r\n", 
-        //             elec_angle, mech_angle);
-            printf("iq:%.2f, id:%.2f, Vq:%.2f, Vd:%.2f, Flag:%d\r\n", 
-                    debug_iq, debug_id, debug_Vq, debug_Vd, run_foc_flag);
+            // printf("elec_angle:%.2f, mech_angle:%.2f\r\n", 
+            //         elec_angle, mech_angle);
+            // printf("iq:%.2f, id:%.2f, Vq:%.2f, Vd:%.2f, Flag:%d\r\n", 
+            //         debug_iq, debug_id, debug_Vq, debug_Vd, run_foc_flag);
+
+            // printf("Target:%.2f, Act:%.2f, Iq_Ref:%.2f, Iq_Act:%.2f\r\n", 
+            //         target_speed, actual_speed_filt, target_iq, debug_iq);
 
         }
 
@@ -445,9 +451,12 @@ float PID_Calc_Speed(PID_Controller* pid, float target, float current)
     // 2. 积分限幅 (核心修改)
     // 这里的限幅应该基于“你允许积分项贡献多少电流”
     // 假设速度环输出 target_iq，最大为 2.0A，我们可以允许积分项占满整个输出
-    float i_limit = 2.0f / (pid->ki * 0.001f); // 反推积分累加器的限幅
-    if (pid->integral > i_limit) pid->integral = i_limit;
-    if (pid->integral < -i_limit) pid->integral = -i_limit;
+    // float i_limit = 2.0f / (pid->ki * 0.001f); // 反推积分累加器的限幅
+    // if (pid->integral > i_limit) pid->integral = i_limit;
+    // if (pid->integral < -i_limit) pid->integral = -i_limit;
+
+    if (pid->integral > 15.0f) pid->integral = 15.0f;
+    if (pid->integral < -15.0f) pid->integral = -15.0f;
 
     // 3. 计算输出 (PI控制)
     float dt = 0.001f;

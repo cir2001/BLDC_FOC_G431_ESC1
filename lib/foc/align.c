@@ -86,7 +86,7 @@ uint16_t FOC_Align_Sensor(void)
     // 如果你的电机在 Id 闭环时 Vq 很大，就修改这个偏置
     // 选项: 0, ELECTRIC_90_DEG_OFFSET, -ELECTRIC_90_DEG_OFFSET
     // 开环 190  -20
-    int16_t manual_adjust = -20; 
+    int16_t manual_adjust = 75; 
     
     uint16_t final_offset = (uint16_t)((zero_offset + manual_adjust) & 0x3FFF);
 

@@ -6,6 +6,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////// 	
 #define USART_TRANS_LEN     	200  	//定义最大接收字节数 200
+#define UART2_DMA_TX_BUF_SIZE 256
 
 
 void uart1_init(u32 bound);

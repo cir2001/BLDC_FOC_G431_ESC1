@@ -1,6 +1,7 @@
 #include "adc_foc.h"
 #include "delay.h"
 #include <stdio.h>
+#include "timer.h"
 
 // 全局变量定义
 float offset_u = 0.0f, offset_v = 0.0f, offset_w = 0.0f;
@@ -19,12 +20,12 @@ void ADC_Init_Registers(void)
     delay_ms(10);
     RCC->AHB2RSTR &= ~(1U << 13);
 
-    // 2. --- 核心修改：切换到同步时钟模式 ---
+    // 2. --- 切换到同步时钟模式 ---
     // 放弃 RCC_CCIPR 的异步配置，直接使用总线同步时钟
     // 设置 CKMODE = 01 (HCLK/1)，即 ADC 运行在 170MHz
     // 同时设置 PRESC = 0010 (即 4 分频，170/4 = 42.5MHz，非常理想的频率)
     ADC12_COMMON->CCR = 0; // 先清空
-    ADC12_COMMON->CCR |= (1U << 16); // CKMODE = 01 (Sync HCLK/1)
+    ADC12_COMMON->CCR |= (3U << 16); // CKMODE = 01 (Sync HCLK/1)
     ADC12_COMMON->CCR |= (2U << 18); // PRESC = 0010 (4分频)
     
     // 3. 开启调节器
@@ -56,30 +57,43 @@ void ADC_Init_Registers(void)
     ADC2->CR  |= ADC_CR_ADEN;
     while(!(ADC2->ISR & ADC_ISR_ADRDY));
 
-    // --- 采样时间配置 ---
-    // ADC1: 通道 13 (Phase U)
+    // --- 采样时间优化配置 ---
+    // 目标：将采样时间压缩到 0.2us ~ 0.5us 左右
+    // 2.5周期有时会导致采样阻抗不匹配，建议改为 6.5 周期 (010)
+    uint32_t smp_time = 3U; // 6.5 cycles
     ADC1->SMPR2 &= ~(7U << 9); 
-    ADC1->SMPR2 |= (6U << 9);     // 92.5 周期
-
-    // ADC2: 通道 16 (Phase V) 和 通道 18 (Phase W)
+    ADC1->SMPR2 |= (smp_time << 9); 
     ADC2->SMPR2 &= ~((7U << 18) | (7U << 24));
-    ADC2->SMPR2 |= (6U << 18);    // 通道 16 -> 92.5 周期
-    ADC2->SMPR2 |= (6U << 24);    // 通道 18 -> 92.5 周期 (必须添加！)
+    ADC2->SMPR2 |= (smp_time << 18);
+    ADC2->SMPR2 |= (smp_time << 24);
+
+    //----FGR 配置（最合适的位置）----
+    // 禁用注入队列模式（我们只用单次注入，不需要队列）
+    ADC1->CFGR |= ADC_CFGR_JQDIS;
+    ADC2->CFGR |= ADC_CFGR_JQDIS;
+
+    // 关闭连续转换模式（注入组是触发式，不是连续）
+    ADC1->CFGR &= ~ADC_CFGR_CONT;
+    ADC2->CFGR &= ~ADC_CFGR_CONT;
 
     // --- 注入序列配置 ---
+    // ADC1 负责 Phase U (通道 13 = OPAMP1)
+    ADC1->JSQR = (0U << ADC_JSQR_JL_Pos)          // JL = 0 (1个转换)
+            | (8U << ADC_JSQR_JEXTSEL_Pos)    // JEXTSEL = 36 → TIM1_TRGO2 (查 RM0440 Table 88)
+            | (1U << ADC_JSQR_JEXTEN_Pos)      // JEXTEN = 01 → 上升沿触发（最稳）
+            | (13U << ADC_JSQR_JSQ1_Pos);      // JSQ1 = 通道 13 (Phase U)
 
-    // ADC1 负责 Phase U (OPAMP1)
-    ADC1->JSQR = (0U << 0)         // JL = 0 (总共 1 个转换)
-            | (8U << 2)         // JEXTSEL = 8 (TIM1_TRGO2)
-            | (1U << 7)         // 允许外部触发
-            | (13U << 9);       // JSQ1 = 通道 13 (OPAMP1 -> Phase U)
+    // ADC2 负责 Phase V + W (通道 16=OPAMP2, 18=OPAMP3)
+    ADC2->JSQR = (1U << ADC_JSQR_JL_Pos)          // JL = 1 (2个转换)
+            | (8U << ADC_JSQR_JEXTSEL_Pos)    // 同上，TRGO2
+            | (1U << ADC_JSQR_JEXTEN_Pos)      // 上升沿触发
+            | (16U << ADC_JSQR_JSQ1_Pos)       // JSQ1 = 通道 16 (Phase V)
+            | (18U << ADC_JSQR_JSQ2_Pos);      // JSQ2 = 通道 18 (Phase W)
 
-    // --- ADC2 配置 (V相 + W相) ---
-    ADC2->JSQR = (1U << 0)         // JL = 1 (总共 2 个转换)
-            | (8U << 2)         // JEXTSEL = 8 (TIM1_TRGO2)
-            | (1U << 7)         // 允许外部触发
-            | (16U << 9)        // JSQ1 = 通道 16 (OPAMP2 -> Phase V)
-            | (18U << 15);      // JSQ2 = 通道 18 (OPAMP3 -> Phase W)
+    // --- 清除所有初始标志位 ---
+    ADC1->ISR |= (ADC_ISR_JEOC | ADC_ISR_JEOS | ADC_ISR_EOC | ADC_ISR_OVR);
+    ADC2->ISR |= (ADC_ISR_JEOC | ADC_ISR_JEOS | ADC_ISR_EOC | ADC_ISR_OVR);
+
 }
 
 /**
@@ -89,56 +103,69 @@ void ADC_Init_Registers(void)
     如果在 main 里不校准，直接在中断里减去固定的 2048，
     算出来的力矩电流 I_q 会有一个很大的初始偏置，电机静止时也会嗡嗡响
  */
-void Calibrate_Current_Offset(void) {
-    // 临时关断 PWM 主输出，确保功率级完全断开
-    uint16_t backup_bdtr = TIM1->BDTR;
-    TIM1->BDTR &= ~TIM_BDTR_MOE;
+void Calibrate_Current_Offset(void) 
+{
+    printf("[System] Starting Dynamic Current Calibration...\r\n");
+
+    // 1. 设置三相占空比为 50%（中值），并开启功率输出
+    // 此时电角度虽然在旋转，但三相电压相等，电机电流理论为 0
+    // 这样校准可以包含功率管开关带来的地弹噪声和电磁干扰
+    TIM1->CCR1 = PWM_ARR / 2;
+    TIM1->CCR2 = PWM_ARR / 2;
+    TIM1->CCR3 = PWM_ARR / 2;
+    TIM1->BDTR |= TIM_BDTR_MOE; 
+    
+    // 给功率级和自举电容足够的稳定时间
+    delay_ms(500); 
 
     uint32_t sum_u = 0, sum_v = 0, sum_w = 0;
-    const int samples = 1024;
+    const int samples = 10000;
 
-    // 关键：校准时必须临时关闭硬件触发 (JEXTEN = 0)，否则 JADSTART 无效
+    // 2. 暂时关闭硬件触发，切换到软件手动触发采样
     ADC1->JSQR &= ~ADC_JSQR_JEXTEN;
     ADC2->JSQR &= ~ADC_JSQR_JEXTEN;
 
     for(int i = 0; i < samples; i++) {
+        // 手动启动注入组转换
         ADC1->CR |= ADC_CR_JADSTART;
         ADC2->CR |= ADC_CR_JADSTART;
         
-        while(!(ADC2->ISR & ADC_ISR_JEOC)); // 等待转换完成
-        
+        // 等待转换完成 (使用 ADC2 作为同步参考)
+        uint32_t wait_timeout = 2000;
+        while(!(ADC2->ISR & ADC_ISR_JEOC) && wait_timeout--);
+
         sum_u += ADC1->JDR1;
         sum_v += ADC2->JDR1;
         sum_w += ADC2->JDR2;
 
-        ADC1->ISR |= ADC_ISR_JEOC; // 清除标志
+        // 清除转换完成标志
+        ADC1->ISR |= ADC_ISR_JEOC; 
         ADC2->ISR |= ADC_ISR_JEOC;
     }
 
+    // 3. 计算最终偏移量
     offset_u = (float)sum_u / (float)samples;
     offset_v = (float)sum_v / (float)samples;
     offset_w = (float)sum_w / (float)samples;
 
-    // 恢复硬件触发模式 (TIM1_TRGO2 上升沿)
+    // 4. 恢复硬件触发模式 (准备进入 FOC 15kHz 中断逻辑)
+    // 假设你使用的是 TIM1_TRGO2 触发，Pos 通常根据 CubeMX 配置确定
     ADC1->JSQR |= (1U << ADC_JSQR_JEXTEN_Pos);
     ADC2->JSQR |= (1U << ADC_JSQR_JEXTEN_Pos);
 
-    // 将原来的 float 打印改为整数打印，排除浮点打印补丁的问题
-    printf("[Calib] Done. Offsets: U:%d, V:%d, W:%d\r\n", (int)offset_u, (int)offset_v, (int)offset_w);
+    // 5. 重要：校准完成后立即关闭 MOE 
+    // 防止在进入 FOC 逻辑前产生不必要的静态发热
+    TIM1->BDTR &= ~TIM_BDTR_MOE;
 
-    // 校准完还原
-    TIM1->BDTR = backup_bdtr;
-}
+    printf("[Calib] Dynamic Done. U:%d, V:%d, W:%d\r\n", (int)offset_u, (int)offset_v, (int)offset_w);
 
-/**
- * @brief 在 FOC 中断中调用的电流读取函数
- */
-void Get_Current_Phases(void) {
-    // 直接从数据寄存器读取
-    // 注意：在 TIM1 中断中，由于是硬件同步触发，进入中断时转换通常已完成
-    i_u = ((float)ADC1->JDR1 - offset_u) * I_COEFF;
-    i_v = ((float)ADC2->JDR1 - offset_v) * I_COEFF;
-    i_w = ((float)ADC1->JDR2 - offset_w) * I_COEFF;
+    // 6. 检查硬件一致性
+    // 如果偏差过大，说明某相的运放电路或采样电阻可能存在硬件误差
+    if (fabs(offset_u - offset_v) > 30 || fabs(offset_u - offset_w) > 30) 
+    {
+        printf("WARNING: Phase Offset Imbalance! U-V:%.1f, U-W:%.1f\r\n", 
+                fabs(offset_u - offset_v), fabs(offset_u - offset_w));
+    }
 }
 
 

@@ -22,7 +22,7 @@
 //-----------------------------------------------
 // 外部函数声明
 //-----------------------------------------------
-
+float open_loop_angle = 0.0f;
 //-----------------------------------------------
 //外部变量声明
 //-----------------------------------------------
@@ -108,7 +108,9 @@ void TIM1_UP_TIM16_IRQHandler(void)
         if (raw_diff < 0) raw_diff += 16384;
         
         float mech_angle = ((float)raw_diff / 16384.0f) * 6.2831853f;
-        float elec_angle = (mech_angle * 7.0f); // 极对数 7
+        float elec_angle = 6.2831853f -(mech_angle * 7.0f); // 极对数 7
+
+        // elec_angle = elec_angle + 3.1415926f;
 
         debug_mech_angle = mech_angle;
 
@@ -116,36 +118,33 @@ void TIM1_UP_TIM16_IRQHandler(void)
         while(elec_angle < 0)           elec_angle += 6.2831853f;
 
         // 2. 速度环逻辑：15分频 (运行频率 1kHz)
-        // static uint16_t speed_cnt = 0;
-        // speed_cnt++;
-        // if (speed_cnt >= 15) 
-        // {
-        //     speed_cnt = 0;
+        static uint16_t speed_cnt = 0;
+        speed_cnt++;
+        if (speed_cnt >= 15) 
+        {
+            speed_cnt = 0;
             
-        //     // 计算角度差 (处理过零点)
-        //     float delta_angle = mech_angle - last_mech_angle;
-        //     if (delta_angle > 3.14159f)  delta_angle -= 6.28318f;
-        //     if (delta_angle < -3.14159f) delta_angle += 6.28318f;
+            // 计算角度差 (处理过零点)
+            float delta_angle = mech_angle - last_mech_angle;
+            if (delta_angle > 3.14159f)  delta_angle -= 6.28318f;
+            if (delta_angle < -3.14159f) delta_angle += 6.28318f;
             
-        //     // 计算瞬时速度 (rad/s) -> 1kHz 频率，所以乘以 1000
-        //     float instant_speed = delta_angle * 1000.0f; 
+            // 计算瞬时速度 (rad/s) -> 1kHz 频率，所以乘以 1000
+            float instant_speed = -(delta_angle * 1000.0f); 
             
-        //     // 速度低通滤波 
-        //     actual_speed_filt = (instant_speed * 0.03f) + (actual_speed_filt * 0.97f);
-        //     last_mech_angle = mech_angle;
+            // 速度低通滤波 
+            actual_speed_filt = (instant_speed * 0.05f) + (actual_speed_filt * 0.95f);
+            last_mech_angle = mech_angle;
 
-        //     float base_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
+            float base_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
 
-        //     // target_iq = base_iq;
-        //     // target_iq = 0.3f;
-        //     // target_id = 0.0f;
-        // }
-        target_iq = 0.0f;
-        target_id = 0.5f;
+            target_iq = base_iq;
+            // target_iq = 0.3f;
+            target_id = 0.0f;
+        }
 
-        // 每次中断都要确保启动注入组转换
-        ADC1->CR |= ADC_CR_JADSTART;
-        ADC2->CR |= ADC_CR_JADSTART;
+        uint32_t timeout = 1000;
+        while(!(ADC1->ISR & ADC_ISR_JEOC) && timeout--);
 
         // 3. 电流环逻辑 (15kHz)
         // 1. 计算原始偏差（ADC值 - 你的静态偏置）
@@ -168,9 +167,9 @@ void TIM1_UP_TIM16_IRQHandler(void)
         float sum_error = sum_filt * 0.3333333f;
 
         // 4. 补偿
-        float iu = (raw_u - sum_error) / -10.0f;
-        float iv = (raw_v - sum_error) / -10.0f;
-        float iw = (raw_w - sum_error) / -10.0f;
+        float iu = (raw_u - sum_error) / 10.0f;
+        float iv = (raw_v - sum_error) / 10.0f;
+        float iw = (raw_w - sum_error) / 10.0f;
 
         // 后续滤波、Clark/Park 不变
         iu_filt = iu_filt*0.85f + iu*0.15f;
@@ -222,15 +221,20 @@ void TIM1_UP_TIM16_IRQHandler(void)
             // Vd, Vq 此时保持由 FOC_PreAlign 函数传入的固定值
             out_angle = 0.0f; // 强行指向 0 度（U相轴线）
             Vd = Vd; // 保持 PreAlign 函数中给的值
-            Vq = 0.0f;
+            Vq = Vq;
+
+            // // ======= 修改后的开环旋转逻辑 =======
+            // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
+            // if(open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
+
+            // out_angle = open_loop_angle; 
+            // Vd = 0.0f;
+            // Vq = 0.3f; // 维持一个足以带动物理转子的电压
         }
 
         // --- SVPWM 输出 ---
         debug_Vq = Vq;
         debug_Vd = Vd;
-
-        // Vd = 0.0f; 
-        // Vq = 0.0f;
 
         float final_s = sinf(out_angle);
         float final_c = cosf(out_angle);
@@ -263,8 +267,8 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
             // printf("iq:%.2f, id:%.2f\r\n", debug_iq, debug_id);
 
-            printf("iq:%.2f, id:%.2f,Vq:%.2f, Vd:%.2f\r\n", 
-                    debug_iq, debug_id,debug_Vq, debug_Vd);
+            // printf("iq:%.2f, id:%.2f,Vq:%.2f, Vd:%.2f\r\n", 
+            //         debug_iq, debug_id,debug_Vq, debug_Vd);
 
             
             // printf("CCR4: %d, ARR: %d\n", TIM1->CCR4, TIM1->ARR);
@@ -273,11 +277,12 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
             // printf("elec_angle:%.2f, mech_angle:%.2f\r\n", 
             //         elec_angle, mech_angle);
+
             // printf("iq:%.2f, id:%.2f, Vq:%.2f, Vd:%.2f, Flag:%d\r\n", 
             //         debug_iq, debug_id, debug_Vq, debug_Vd, run_foc_flag);
 
-            // printf("Target:%.2f, Act:%.2f, Iq_Ref:%.2f, Iq_Act:%.2f\r\n", 
-            //         target_speed, actual_speed_filt, target_iq, debug_iq);
+            printf("Target:%.2f, Act:%.2f, Iq_Ref:%.2f, Iq_Act:%.2f\r\n", 
+                    target_speed, actual_speed_filt, target_iq, debug_iq);
 
         }
 
@@ -455,13 +460,12 @@ float PID_Calc_Speed(PID_Controller* pid, float target, float current)
     // if (pid->integral > i_limit) pid->integral = i_limit;
     // if (pid->integral < -i_limit) pid->integral = -i_limit;
 
-    if (pid->integral > 15.0f) pid->integral = 15.0f;
-    if (pid->integral < -15.0f) pid->integral = -15.0f;
+    if (pid->integral > 100.0f) pid->integral = 100.0f; 
+    if (pid->integral < -100.0f) pid->integral = -100.0f;
 
     // 3. 计算输出 (PI控制)
-    float dt = 0.001f;
     float p_out = pid->kp * error;
-    float i_out = pid->ki * dt * pid->integral;
+    float i_out = pid->ki * pid->integral; 
     
     float out = p_out + i_out;
 

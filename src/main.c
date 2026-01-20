@@ -150,39 +150,48 @@ int main(void) {
            ADC1->JDR1, ADC2->JDR1, ADC2->JDR2);
 
     // 重要：需要开启才能自启动
-    // TIM1->BDTR |= TIM_BDTR_MOE;
+    TIM1->BDTR |= TIM_BDTR_MOE;
 
     // --- 速度环 (外环) ---
-    target_speed = 2.0f;      
-    pid_speed.kp = 0.05f;      // 速度环 Kp 通常较小
-    pid_speed.ki = 0.08f; 
+    target_speed = 10.0f;      
+    pid_speed.kp = 0.1f;      // 速度环 Kp 通常较小
+    pid_speed.ki = 0.01f; 
     pid_speed.output_limit = 2.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    pid_id.kp = 0.005f;   pid_id.ki = 5.0f; 
+    pid_id.kp = 0.005f;   pid_id.ki = 10.0f; 
     pid_id.output_limit = 1.5; // 对应 SVPWM 最大电压 (1.0)
     
-    pid_iq.kp = 0.005f;   pid_iq.ki = 5.0f; 
+    pid_iq.kp = 0.005f;   pid_iq.ki = 10.0f; 
     pid_iq.output_limit = 1.5;
 
     // --- 第四步：执行【开机预对齐】逻辑 ---
-    // FOC_PreAlign(0.4f, 1000);  // 锁死
+    FOC_PreAlign(0.4f, 1000);  // 锁死
+    Vq = 0.0f;
 
     // // 完全松开（确保电压输出 0）
-    // Vd = 0.05f;
-    // Vq = 0.0f;
-    // FOC_SVPWM_Update(Vd, Vq, 0.0f);
-    // delay_ms(200);  // 800ms 彻底松开
+    Vd = 0.05f;
+    Vq = 0.0f;
+    FOC_SVPWM_Update(Vd, Vq, 0.0f);
+    delay_ms(200);  // 800ms 彻底松开
 
     // --- 第五步：简单自动启动（扰动 + 冲击） ---
     // 先开启闭环
-    run_foc_flag = 0;
-    Vd = 0.5f;        // 直接给 0.5V 电压
-    Vq = 0.0f;
+    run_foc_flag = 1;
+
+    Vd = 0.0f; // 保持 PreAlign 函数中给的值
+    Vq = 0.3f;
+
     // 反向小脉冲 + 正向冲击（模拟手拨）
-    // target_iq = 1.0f;  // 正向冲击 1.2A
-    // delay_ms(500);
-    // target_iq = 0.3f;  // 降回正常
+    target_iq = -1.2f;  // 反向 1.2A
+    delay_ms(100);
+    target_iq = 0.0f;
+    delay_ms(50);
+    target_iq = 1.5f;   // 正向冲击 1.5A
+    delay_ms(300);
+    target_iq = 0.5f;   // 降回正常
+    // target_iq = 0.5f;
+    // target_id = 0.0f;
 
     // 3. 启动控制
     TIM1->DIER |= TIM_DIER_UIE;
@@ -193,11 +202,7 @@ int main(void) {
 // -------------------------- 主循环 --------------------------
     while (1) 
     {
-        // test_angle += 0.02f;  // 缓慢增加角度（约 1.15°/循环）
-        // if (test_angle > 6.2831853f) test_angle -= 6.2831853f;
 
-        // FOC_SVPWM_Update(Vd, Vq, test_angle);
-        // delay_ms(5);  // 慢速 ramp，观察电机是否转
     //-----------------------------------------------------
         led_tick++;
         if (led_tick >= 100000) // 每500ms翻转一次LED0
@@ -205,7 +210,6 @@ int main(void) {
             led_tick = 0;
             // LED0_TOGGLE();      // 翻转LED0
         }
-
      }
 }
 

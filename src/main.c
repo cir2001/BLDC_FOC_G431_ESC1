@@ -52,7 +52,7 @@
 #include "align.h"
 #include "button.h"
 #include "opamp.h"
-// #include "control.h"
+#include "control.h"
 #include "adc_foc.h"
 #include <stdlib.h>
 #include <math.h>
@@ -96,15 +96,20 @@ volatile float debug_iw = 0;
 volatile float debug_mech_angle  = 0;
 
 extern float elec_angle;
-extern float offset_u, offset_v, offset_w;
 //================================================================================
 int main(void) {
     SCB->CPACR |= ((3UL << 10*2) | (3UL << 11*2));
     // 系统时钟初始化 (170MHz)
+
     SystemClock_Config(); 
     // 延时函数初始化
     delay_init(170); 
+
     uart2_init(115200); // USART2 初始化，波特率 115200
+
+    // 3. CORDIC 硬件加速器初始化 (必须在算法调用前)
+    CORDIC_Init();
+    delay_ms(100);
     AS5047P_Init();
     delay_ms(100);
 
@@ -122,6 +127,7 @@ int main(void) {
     // 执行电角度校准，获取零位偏移
     // 这个函数会强行给电机通电并对齐
     my_zero_offset = FOC_Align_Sensor();
+    delay_ms(20);
     printf("zero_offset: %d\r\n", my_zero_offset);
     delay_ms(500);
 
@@ -135,9 +141,10 @@ int main(void) {
 
     // 电流零位校准 (零电流偏置)
     // 此时 PWM 还没输出，电机电流为 0，正是采集 1.65V 偏置（约2048）的最佳时机 
-    printf("Starting current offset calibration...\r\n");
     Calibrate_Current_Offset();
+    delay_ms(50);
     printf("Current offset calibration complete.\r\n");
+    delay_ms(50);
 
     // 可选：标定后立即验证一次零电流值（调试用）
     ADC1->CR |= ADC_CR_JADSTART;
@@ -146,11 +153,12 @@ int main(void) {
     ADC1->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
     ADC2->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
 
+    delay_ms(100);
     printf("Verify zero current raw: U=%lu, V=%lu, W=%lu\r\n",
            ADC1->JDR1, ADC2->JDR1, ADC2->JDR2);
-
+    delay_ms(50);
     // 重要：需要开启才能自启动
-    TIM1->BDTR |= TIM_BDTR_MOE;
+    // TIM1->BDTR |= TIM_BDTR_MOE;
 
     // --- 速度环 (外环) ---
     target_speed = 10.0f;      
@@ -159,39 +167,41 @@ int main(void) {
     pid_speed.output_limit = 2.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    pid_id.kp = 0.005f;   pid_id.ki = 10.0f; 
-    pid_id.output_limit = 1.5; // 对应 SVPWM 最大电压 (1.0)
+    pid_id.kp = 0.8f;   pid_id.ki = 0.01f; 
+    pid_id.output_limit = 2.5; // 对应 SVPWM 最大电压 (1.0)
     
-    pid_iq.kp = 0.005f;   pid_iq.ki = 10.0f; 
-    pid_iq.output_limit = 1.5;
+    pid_iq.kp = 0.8f;   pid_iq.ki = 1.0f; 
+    pid_iq.output_limit = 2.5;
 
     // --- 第四步：执行【开机预对齐】逻辑 ---
-    FOC_PreAlign(0.4f, 1000);  // 锁死
-    Vq = 0.0f;
+    // FOC_PreAlign(0.5f, 1000);  // 锁死
+    // Vq = 0.0f;
 
-    // // 完全松开（确保电压输出 0）
-    Vd = 0.05f;
-    Vq = 0.0f;
-    FOC_SVPWM_Update(Vd, Vq, 0.0f);
-    delay_ms(200);  // 800ms 彻底松开
+    // // // 完全松开（确保电压输出 0）
+    // Vd = 0.05f;
+    // Vq = 0.0f;
+    // FOC_SVPWM_Update(Vd, Vq, 0.0f);
+    // delay_ms(200);  // 800ms 彻底松开
 
     // --- 第五步：简单自动启动（扰动 + 冲击） ---
     // 先开启闭环
     run_foc_flag = 1;
 
-    Vd = 0.0f; // 保持 PreAlign 函数中给的值
-    Vq = 0.3f;
+    // Vd = 1.0f; // 保持 PreAlign 函数中给的值
+    // Vq = 0.0f;
 
     // 反向小脉冲 + 正向冲击（模拟手拨）
-    target_iq = -1.2f;  // 反向 1.2A
-    delay_ms(100);
-    target_iq = 0.0f;
-    delay_ms(50);
-    target_iq = 1.5f;   // 正向冲击 1.5A
-    delay_ms(300);
-    target_iq = 0.5f;   // 降回正常
-    // target_iq = 0.5f;
-    // target_id = 0.0f;
+    // target_iq = 1.2f;  // 反向 1.2A
+    // delay_ms(100);
+    // target_iq = 0.0f;
+    // delay_ms(50);
+    // target_iq = -1.5f;   // 正向冲击 1.5A
+    // delay_ms(300);
+    // target_iq = 0.5f;   // 降回正常
+    // delay_ms(300);
+    target_id = 0.0f;
+    target_iq = 1.0f;
+
 
     // 3. 启动控制
     TIM1->DIER |= TIM_DIER_UIE;
@@ -199,6 +209,7 @@ int main(void) {
     TIM1->CR1 |= TIM_CR1_CEN;    // 确保计数器在运行
 
     printf("[System] FOC Loop Running. Target Iq: %.2f\r\n", target_iq);
+    delay_ms(50);
 // -------------------------- 主循环 --------------------------
     while (1) 
     {

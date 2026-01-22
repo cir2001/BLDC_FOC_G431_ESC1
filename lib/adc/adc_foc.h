@@ -4,7 +4,6 @@
 #include "stm32g4xx.h"
 
 // 电流采样相关全局变量
-extern float offset_u, offset_v, offset_w;
 extern float i_u, i_v, i_w;
 
 // 函数声明

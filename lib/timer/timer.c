@@ -3,7 +3,7 @@
 #include "led.h"
 #include <math.h>
 #include "align.h"
-// #include "control.h"
+#include "control.h"
 #include "math.h"
 #include "adc_foc.h"
 #include <stdio.h>
@@ -50,6 +50,13 @@ volatile float debug_iu_filt;
 volatile float debug_iv_filt;
 volatile float debug_iw_filt;
 
+volatile float debug_Ialpha;
+volatile float debug_Ibeta;
+volatile float debug_iq_filt;
+volatile float debug_id_filt;
+volatile float debug_elec_angle;
+//-----------------------------------------------
+
 extern PID_Controller pid_id;
 extern PID_Controller pid_iq;
 
@@ -76,11 +83,9 @@ float target_id = 0.0f;
 
 static float last_mech_angle = 0.0f;
 static float i_d_f = 0.0f, i_q_f = 0.0f; // 电流滤波变量
-static float iu_filt = 0.0f, iv_filt = 0.0f, iw_filt = 0.0f; // 电流
 
 extern PID_Controller pid_id, pid_iq, pid_speed;
 extern uint16_t my_zero_offset;
-extern float offset_u, offset_v, offset_w;
 
 // 用于调试打印
 volatile float debug_speed_act = 0;
@@ -89,6 +94,9 @@ volatile float debug_iq_target = 0;
 volatile float Vd = 0.0f;
 volatile float Vq = 0.0f;
 volatile float force_angle = 0.0f; // 强制输出时的电角度
+volatile float Valpha;
+volatile float Vbeta;
+//-----------------------------------------------
 //==============================================
 // TIM1 更新中断服务函数
 //==============================================
@@ -104,107 +112,72 @@ void TIM1_UP_TIM16_IRQHandler(void)
         uint16_t angle_raw = FOC_ReadAngle_Optimized();
         if ((angle_raw & 0x4000) || angle_raw == 0x3FFF) return; 
 
-        int16_t raw_diff = (int16_t)(angle_raw & 0x3FFF) - (int16_t)my_zero_offset;
+        int32_t raw_diff = ((int16_t)(angle_raw & 0x3FFF) - (int16_t)my_zero_offset)*7;
+        raw_diff = raw_diff % 16384;
         if (raw_diff < 0) raw_diff += 16384;
         
-        float mech_angle = ((float)raw_diff / 16384.0f) * 6.2831853f;
-        float elec_angle = 6.2831853f -(mech_angle * 7.0f); // 极对数 7
+        float elec_angle = 6.2831853f-((float)raw_diff * (6.2831853f / 16384.0f));
 
-        // elec_angle = elec_angle + 3.1415926f;
+        debug_elec_angle = elec_angle;      
+        // debug_mech_angle = mech_angle;
 
-        debug_mech_angle = mech_angle;
+        // while(elec_angle >= 6.2831853f) elec_angle -= 6.2831853f;
+        // while(elec_angle < 0)           elec_angle += 6.2831853f;
 
-        while(elec_angle >= 6.2831853f) elec_angle -= 6.2831853f;
-        while(elec_angle < 0)           elec_angle += 6.2831853f;
-
-        // 2. 速度环逻辑：15分频 (运行频率 1kHz)
-        static uint16_t speed_cnt = 0;
-        speed_cnt++;
-        if (speed_cnt >= 15) 
-        {
-            speed_cnt = 0;
-            
-            // 计算角度差 (处理过零点)
-            float delta_angle = mech_angle - last_mech_angle;
-            if (delta_angle > 3.14159f)  delta_angle -= 6.28318f;
-            if (delta_angle < -3.14159f) delta_angle += 6.28318f;
-            
-            // 计算瞬时速度 (rad/s) -> 1kHz 频率，所以乘以 1000
-            float instant_speed = -(delta_angle * 1000.0f); 
-            
-            // 速度低通滤波 
-            actual_speed_filt = (instant_speed * 0.05f) + (actual_speed_filt * 0.95f);
-            last_mech_angle = mech_angle;
-
-            float base_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
-
-            target_iq = base_iq;
-            // target_iq = 0.3f;
-            target_id = 0.0f;
-        }
 
         uint32_t timeout = 1000;
-        while(!(ADC1->ISR & ADC_ISR_JEOC) && timeout--);
+        while(!(ADC2->ISR & ADC_ISR_JEOC) && timeout--);
 
         // 3. 电流环逻辑 (15kHz)
         // 1. 计算原始偏差（ADC值 - 你的静态偏置）
         float raw_u = (float)ADC1->JDR1 - offset_u;
-        float raw_v = (float)ADC2->JDR1 - offset_v;
-        float raw_w = (float)ADC2->JDR2 - offset_w;
+        float raw_v = (float)ADC2->JDR1 - offset_v; 
+        float raw_w = (float)ADC2->JDR2 - offset_w; 
 
         debug_raw_u = raw_u;
         debug_raw_v = raw_v;
         debug_raw_w = raw_w;
 
-        // 1. 计算原始三相和（用于补偿）
-        float sum_raw = raw_u + raw_v + raw_w;
+        // 在采样后、Clarke 前加：
+        float sum = raw_u + raw_v + raw_w;
+        float com = sum * 0.33333333f; // sum / 3.0f
+        raw_u -= com; raw_v -= com; raw_w -= com;
 
-        // 2. 低通滤波三相和（更稳定，避免单次跳变影响补偿）
-        static float sum_filt = 0.0f;
-        sum_filt = sum_filt * 0.95f + sum_raw * 0.05f;
-
-        // 3. 均值偏差（滤波后更平滑）
-        float sum_error = sum_filt * 0.3333333f;
-
-        // 4. 补偿
-        float iu = (raw_u - sum_error) / 10.0f;
-        float iv = (raw_v - sum_error) / 10.0f;
-        float iw = (raw_w - sum_error) / 10.0f;
-
-        // 后续滤波、Clark/Park 不变
-        iu_filt = iu_filt*0.85f + iu*0.15f;
-        iv_filt = iv_filt*0.85f + iv*0.15f;
-        iw_filt = iw_filt*0.85f + iw*0.15f;
+        float iu = (raw_u) / 10.0f;
+        float iv = (raw_v) / 10.0f;
+        float iw = (raw_w) / 10.0f;
 
         debug_iu = iu;
         debug_iv = iv;
         debug_iw = iw;
 
-        debug_iu_filt = iu_filt;
-        debug_iv_filt = iv_filt;
-        debug_iw_filt = iw_filt;
-
         // Clark & Park 变换
         // float i_alpha = iu;
         // float i_beta = (iv - iw) * 0.5773503f;
-        float i_alpha = iu_filt;
-        float i_beta = (iv_filt - iw_filt) * 0.5773503f;
+        float i_alpha = iu;
+        float i_beta = (iv - iw) * 0.57735027f;
 
-        float sin_t = sinf(elec_angle);
-        float cos_t = cosf(elec_angle);
+        debug_Ialpha = i_alpha;
+        debug_Ibeta = i_beta;
 
-        float i_d =  i_alpha * cos_t + i_beta * sin_t;
-        float i_q = -i_alpha * sin_t + i_beta * cos_t;
+        // elec_angle=0.0f;     
+        // 使用 CORDIC 计算 Sin/Cos
+        float st, ct;
+        CORDIC_SinCos(elec_angle, &st, &ct);
 
-        // 电流低通滤波 (系数 0.1)
-        // i_d_f = (i_d * 0.05f) + (i_d_f * 0.95f);
-        // i_q_f = (i_q * 0.05f) + (i_q_f * 0.95f);
+        // Park 变换
+        float i_d = i_alpha * ct + i_beta * st;
+        float i_q = -i_alpha * st + i_beta * ct;
 
-        i_d_f = i_d;
-        i_q_f = i_q;
+        debug_id = i_d;
+        debug_iq = i_q;
 
-        debug_iq = i_q_f;
-        debug_id = i_d_f;
+        // 电流低通滤波 
+        i_d_f = (i_d * 0.05f) + (i_d_f * 0.95f);
+        i_q_f = (i_q * 0.05f) + (i_q_f * 0.95f);
+
+        debug_iq_filt = i_q_f;
+        debug_id_filt = i_d_f;
 
         // --- 4. 控制模式分流 (核心修改) ---
         float out_angle;
@@ -212,18 +185,32 @@ void TIM1_UP_TIM16_IRQHandler(void)
         {
             // PID 计算 Vd, Vq
             Vd = PID_Calc(&pid_id, target_id, i_d_f);
-            Vq = PID_Calc(&pid_iq, target_iq, i_q_f);
-            out_angle = elec_angle;
+            float Vq_pid = PID_Calc(&pid_iq, target_iq, i_q_f);
+            
+            Vq = Vq_pid;
+            // Vd = 0.0f; 
+            // Vq = 0.3;
+            // out_angle = elec_angle;
+            
+            // --- 5. 逆变换与输出 ---
+            // 逆 Park 变换
+            Valpha = Vd * ct - Vq * st;
+            Vbeta  = Vd * st + Vq * ct;
         }
         else 
         {
             // ======= 强制模式：预对齐 =======
             // Vd, Vq 此时保持由 FOC_PreAlign 函数传入的固定值
-            out_angle = 0.0f; // 强行指向 0 度（U相轴线）
-            Vd = Vd; // 保持 PreAlign 函数中给的值
-            Vq = Vq;
+            out_angle = elec_angle; // 强行指向 0 度（U相轴线）
+            Vd = 1.0f; // 保持 PreAlign 函数中给的值
+            Vq = 0.0f;
 
-            // // ======= 修改后的开环旋转逻辑 =======
+            float s, c;
+            CORDIC_SinCos(out_angle, &s, &c);
+            Valpha = Vd * c - Vq * s;
+            Vbeta  = Vd * s + Vq * c;
+
+            // ======= 修改后的开环旋转逻辑 =======
             // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
             // if(open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
 
@@ -232,18 +219,10 @@ void TIM1_UP_TIM16_IRQHandler(void)
             // Vq = 0.3f; // 维持一个足以带动物理转子的电压
         }
 
-        // --- SVPWM 输出 ---
         debug_Vq = Vq;
         debug_Vd = Vd;
-
-        float final_s = sinf(out_angle);
-        float final_c = cosf(out_angle);
-
-        // 逆 Park 变换
-        float Valpha = Vd * final_c - Vq * final_s;
-        float Vbeta  = Vd * final_s + Vq * final_c;
         
-        // 调用你之前的 Min-Max SVPWM 函数
+        // SVPWM 调制输出到寄存器
         SVPWM_Output_Standard(Valpha, Vbeta);
         
         debug_speed_act = actual_speed_filt;
@@ -257,20 +236,28 @@ void TIM1_UP_TIM16_IRQHandler(void)
         { // 15kHz下，7500次是500ms
             Timer1_Counter = 0;
             LED0_TOGGLE();
-            // printf("IU:%.2f, IV:%.2f, IW:%.2f,raw_u:%.2f,raw_v:%.2f,raw_w:%.2f\r\n", 
-            //         debug_iu, debug_iv,debug_iw, debug_raw_u, debug_raw_v, debug_raw_w);
+            // printf("IU:%.2f, IV:%.2f, IW:%.2f\r\n",debug_iu, debug_iv,debug_iw);
             
+            // printf("raw_u:%.2f,raw_v:%.2f,raw_w:%.2f\r\n",debug_raw_u, debug_raw_v, debug_raw_w);
+
+            // printf("Ialpha:%.2f,Ibeta:%.2f\r\n",debug_Ialpha, debug_Ibeta);
+
+            // printf("id:%.2f, iq:%.2f,id_f:%.2f, iq_f:%.2f\r\n",debug_id, debug_iq,debug_id_filt, debug_iq_filt);
+
+            // printf("IUIV:%.2f, IW:%.2f,IU_filt:%.2f, IV_filt:%.2f, IW_filt:%.2f\r\n", 
+                    // debug_iu, debug_iv,debug_iw, debug_iu_filt, debug_iv_filt, debug_iw_filt);
+
+            // printf("Vq:%.2f, Vd:%.2f\r\n",debug_Vq, debug_Vd);
+
             // printf("IU:%.2f, IV:%.2f, IW:%.2f,IU_filt:%.2f, IV_filt:%.2f, IW_filt:%.2f\r\n", 
             //         debug_iu, debug_iv,debug_iw, debug_iu_filt, debug_iv_filt, debug_iw_filt);
             
             // printf("Vd:%.2f, id:%.2f\r\n", debug_Vd, debug_id);
 
-            // printf("iq:%.2f, id:%.2f\r\n", debug_iq, debug_id);
+            // printf("iq:%.2f, id:%.2f,Ialpha:%.2f,Ibeta:%.2f\r\n", 
+            //         debug_iq_filt, debug_id_filt,debug_Ialpha, debug_Ibeta);
 
-            // printf("iq:%.2f, id:%.2f,Vq:%.2f, Vd:%.2f\r\n", 
-            //         debug_iq, debug_id,debug_Vq, debug_Vd);
-
-            
+           
             // printf("CCR4: %d, ARR: %d\n", TIM1->CCR4, TIM1->ARR);
 
             // printf("angle_raw: %d\r\n",angle_raw);
@@ -281,8 +268,17 @@ void TIM1_UP_TIM16_IRQHandler(void)
             // printf("iq:%.2f, id:%.2f, Vq:%.2f, Vd:%.2f, Flag:%d\r\n", 
             //         debug_iq, debug_id, debug_Vq, debug_Vd, run_foc_flag);
 
-            printf("Target:%.2f, Act:%.2f, Iq_Ref:%.2f, Iq_Act:%.2f\r\n", 
-                    target_speed, actual_speed_filt, target_iq, debug_iq);
+            // printf("Target:%.2f, Act:%.2f, Iq_Ref:%.2f, Iq_Act:%.2f\r\n", 
+            //         target_speed, actual_speed_filt, target_iq, debug_iq);
+
+            //开环，vd=1.0f，zero offset观测
+            // printf("iq:%.2f, id:%.2f,Vq:%.2f,Vd:%.2f,angle_raw: %d\r\n", 
+            //         debug_iq, debug_id,debug_Vq, debug_Vd,angle_raw);
+
+            // printf("T:%.2f, R:%.2f, Vq:%.2f\r\n", target_iq, debug_iq_filt, debug_Vq);
+
+            printf("iq:%.2f,id:%.2f,Vq:%.2f,Vd:%.2f,Tq:%.2f,Td:%.2f,eAngle:%.2f\r\n", 
+                    debug_iq,debug_id,debug_Vq,debug_Vd, target_iq, target_id, debug_elec_angle);
 
         }
 
@@ -333,7 +329,10 @@ void TIM1_PWM_Init(u16 arr)
     // --- 配置 CH4 作为 ADC 触发源 ---
     TIM1->CCMR2 &= ~TIM_CCMR2_OC4M;
     TIM1->CCMR2 |= (6 << TIM_CCMR2_OC4M_Pos) | TIM_CCMR2_OC4PE; // CH4 同样设为 PWM 模式 1
-    TIM1->CCR4 = 20;          // 固定谷值中心
+    TIM1->CCR4 = arr - 50;   
+    // --- 【关键修改：映射 TRGO2 到 OC4REF】 ---
+    TIM1->CR2 &= ~TIM_CR2_MMS2;
+    TIM1->CR2 |= (4U << 20);    // 0100: OC4REF 信号映射到 TRGO2     
     TIM1->CCER |= TIM_CCER_CC4E;    // 使能 OC4（内部产生 REF 信号）
 
     // 8. 使能输出
@@ -344,11 +343,6 @@ void TIM1_PWM_Init(u16 arr)
     TIM1->BDTR &= ~TIM_BDTR_DTG;
     TIM1->BDTR |= 100; 
     TIM1->BDTR |= TIM_BDTR_MOE; 
-
-    // --- 【关键修改：映射 TRGO2 到 OC4REF】 ---
-    TIM1->CR2 &= ~TIM_CR2_MMS2;
-    // MMS2 = 0110: OC4REF 的上升/下降沿产生 TRGO2 信号
-    TIM1->CR2 |= (4U << 20);    // 0110 = falling edge
 
     // 11. 启动
     TIM1->EGR |= TIM_EGR_UG;   // 更新寄存器
@@ -374,70 +368,60 @@ void SVPWM_Output_Standard(float Valpha, float Vbeta)
     float U_v = -0.5f * Valpha - 0.8660254f * Vbeta;
     float U_w = -0.5f * Valpha + 0.8660254f * Vbeta;
 
-    // 3. 寻找极值 (用于注入零序分量/中点平移)
+    // 3. 寻找极值 (用于注入零序分量)
     float max_v = U_u, min_v = U_u;
     if (U_v > max_v) max_v = U_v; if (U_v < min_v) min_v = U_v;
     if (U_w > max_v) max_v = U_w; if (U_w < min_v) min_v = U_w;
 
-    // 4. 注入零序分量 (标准 SVPWM)
+    // 4. 注入零序分量 (中点平移)
     float V_offset = (max_v + min_v) * 0.5f;
 
-    // 映射到 0.0 ~ 1.0 占空比范围
-    float Ta = (U_u - V_offset) + 0.5f;
-    float Tb = (U_v - V_offset) + 0.5f;
-    float Tc = (U_w - V_offset) + 0.5f;
+    // 5. 映射到 0.0 ~ 1.0 占空比并增加安全限幅
+    // 使用 0.5 缩放确保在 [-1, 1] 输入下 Ta 始终正数
+    float Ta = (U_u - V_offset) * 0.5f + 0.5f;
+    float Tb = (U_v - V_offset) * 0.5f + 0.5f;
+    float Tc = (U_w - V_offset) * 0.5f + 0.5f;
 
-    // --- [关键修改] 5. 计算并限制 CCR 值以预留采样窗口 ---
-    
-    // 将占空比转换为计数值
+    if(Ta > 1.0f) Ta = 1.0f; else if(Ta < 0.0f) Ta = 0.0f;
+    if(Tb > 1.0f) Tb = 1.0f; else if(Tb < 0.0f) Tb = 0.0f;
+    if(Tc > 1.0f) Tc = 1.0f; else if(Tc < 0.0f) Tc = 0.0f;
+
+    // 6. 转换为计数值并预留采样窗口
     uint16_t ccr1 = (uint16_t)(Ta * PWM_ARR);
     uint16_t ccr2 = (uint16_t)(Tb * PWM_ARR);
     uint16_t ccr3 = (uint16_t)(Tc * PWM_ARR);
 
-    // 计算最大允许的 CCR 值
-    // 保证下桥臂导通时间（即 CCR 之后到 ARR 结束的时间）不小于 MIN_OFF_TICKS / 2
-    // 在中心对齐模式下，采样窗宽度 = 2 * (ARR - CCR)
-    // --- 采样窗保护 ---
-    // 防止占空比过高（接近100%）导致下桥臂导通时间太短，ADC 采样失败
-    uint16_t max_ccr = PWM_ARR - 200; 
+    uint16_t max_ccr = PWM_ARR - 400; 
     if (ccr1 > max_ccr) ccr1 = max_ccr;
     if (ccr2 > max_ccr) ccr2 = max_ccr;
     if (ccr3 > max_ccr) ccr3 = max_ccr;
 
-    // 6. 写入寄存器
+    // 7. 写入寄存器
     TIM1->CCR1 = ccr1;
     TIM1->CCR2 = ccr2;
     TIM1->CCR3 = ccr3;
 
-    // ---  更新 CCR4 采样点  ---
-    // 强制在计数器接近 ARR (波谷) 的时刻触发 ADC
-    // 这样能确保在三个下桥臂都导通的最稳定时刻采样
-    TIM1->CCR4 = 80;
-    // TIM1->CCR4 = (uint16_t)(PWM_ARR - 20);
+    // 8. 更新采样点 (CCR4 保持在波谷附近)
+    TIM1->CCR4 = (uint16_t)(PWM_ARR - 50);
 }
 
 float PID_Calc(PID_Controller* pid, float target, float current) 
 {
     float error = target - current;
-    // float error = current - target;
     float dt = 0.000066f; 
 
-    // 1. 正常的积分累加
-    pid->integral += error; 
-
-    // 2. 修正积分限幅逻辑 (重要！)
-    // 目标：让积分项(I部分)能够输出的最大电压等于输出限幅
-    // 倒推公式：integral_limit = output_limit / (ki * dt)
-    float i_term_limit = pid->output_limit / (pid->ki * dt + 0.000001f); // 加微小值防止除0
-    
-    if (pid->integral > i_term_limit) pid->integral = i_term_limit;
-    if (pid->integral < -i_term_limit) pid->integral = -i_term_limit;
-
-    // 3. 计算 P 和 I 项
+    // 1. 计算 P 项
     float p_term = pid->kp * error;
-    float i_term = pid->ki * dt * pid->integral;
 
-    float out = p_term + i_term;
+    // 2. 计算 I 项（只有在输出未饱和时才累加，或者直接限幅）
+    pid->integral += error * pid->ki * dt;
+
+    // 限制积分项分量本身，通常设为 output_limit 的一半或全部
+    if (pid->integral > pid->output_limit) pid->integral = pid->output_limit;
+    if (pid->integral < -pid->output_limit) pid->integral = -pid->output_limit;
+
+    // 3. 总输出
+    float out = p_term + pid->integral;
 
     // 4. 总输出限幅
     if (out > pid->output_limit) out = pid->output_limit;
@@ -524,7 +508,36 @@ void FOC_SVPWM_Update(float Vd, float Vq, float angle)
     TIM1->CCR2 = ccr2;
     TIM1->CCR3 = ccr3;
 
-    // === 8. 更新采样触发点 (CCR4) ===
-    TIM1->CCR4 = 80; 
+    // === 8. 更新采样触发点 (CCR4) ===80
+    TIM1->CCR4 = 150; 
 }
+
+
+        // 2. 速度环逻辑：15分频 (运行频率 1kHz)
+        // static uint16_t speed_cnt = 0;
+        // speed_cnt++;
+        // if (speed_cnt >= 15) 
+        // {
+        //     speed_cnt = 0;
+            
+        //     // 计算角度差 (处理过零点)
+        //     float delta_angle = mech_angle - last_mech_angle;
+        //     if (delta_angle > 3.14159f)  delta_angle -= 6.28318f;
+        //     if (delta_angle < -3.14159f) delta_angle += 6.28318f;
+            
+        //     // 计算瞬时速度 (rad/s) -> 1kHz 频率，所以乘以 1000
+        //     float instant_speed = -(delta_angle * 1000.0f); 
+            
+        //     // 速度低通滤波 
+        //     actual_speed_filt = (instant_speed * 0.05f) + (actual_speed_filt * 0.95f);
+        //     last_mech_angle = mech_angle;
+
+        //     float base_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
+
+        //     target_iq = base_iq;
+        //     // target_iq = 0.3f;
+        //     target_id = 0.0f;
+        // }
+
+
 

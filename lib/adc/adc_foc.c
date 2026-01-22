@@ -57,24 +57,12 @@ void ADC_Init_Registers(void)
     ADC2->CR  |= ADC_CR_ADEN;
     while(!(ADC2->ISR & ADC_ISR_ADRDY));
 
-    // --- 新增：硬件过采样配置 (针对注入组) ---
-    // 目标：通过 8 倍过采样减小噪声，保持 12 位分辨率
-    // ADC1 配置
-    ADC1->CFGR2 &= ~(ADC_CFGR2_OVSR | ADC_CFGR2_OVSS | ADC_CFGR2_ROVSE | ADC_CFGR2_JOVSE); // 清零
-    ADC1->CFGR2 |= (2U << ADC_CFGR2_OVSR_Pos);   // OVSR = 010: 8倍过采样 (Ratio = 8x)
-    ADC1->CFGR2 |= (3U << ADC_CFGR2_OVSS_Pos);   // OVSS = 0011: 右移 3 位 (Shift = 3)
-    ADC1->CFGR2 |= ADC_CFGR2_JOVSE;              // JOVSE = 1: 开启注入组过采样
-
-    // ADC2 配置
-    ADC2->CFGR2 &= ~(ADC_CFGR2_OVSR | ADC_CFGR2_OVSS | ADC_CFGR2_ROVSE | ADC_CFGR2_JOVSE); // 清零
-    ADC2->CFGR2 |= (2U << ADC_CFGR2_OVSR_Pos);   // 8倍过采样
-    ADC2->CFGR2 |= (3U << ADC_CFGR2_OVSS_Pos);   // 右移 3 位
-    ADC2->CFGR2 |= ADC_CFGR2_JOVSE;              // 开启注入组过采样
+    ADC1->CFGR2 &= ~ADC_CFGR2_JOVSE; // 关闭注入组过采样
+    ADC2->CFGR2 &= ~ADC_CFGR2_JOVSE;
 
     // --- 采样时间优化配置 ---
     // 目标：将采样时间压缩到 0.2us ~ 0.5us 左右
-    // 2.5周期有时会导致采样阻抗不匹配，建议改为 6.5 周期 (010)
-    uint32_t smp_time = 3U; // 6.5 cycles
+    uint32_t smp_time = 3U; 
     ADC1->SMPR2 &= ~(7U << 9); 
     ADC1->SMPR2 |= (smp_time << 9); 
     ADC2->SMPR2 &= ~((7U << 18) | (7U << 24));
@@ -117,70 +105,118 @@ void ADC_Init_Registers(void)
     如果在 main 里不校准，直接在中断里减去固定的 2048，
     算出来的力矩电流 I_q 会有一个很大的初始偏置，电机静止时也会嗡嗡响
  */
+// void Calibrate_Current_Offset(void) 
+// {
+//     printf("[System] Starting Synchronous Dynamic Calibration...\r\n");
+
+//     // 1. 预设占空比为 50%
+//     TIM1->CCR1 = PWM_ARR / 2;
+//     TIM1->CCR2 = PWM_ARR / 2;
+//     TIM1->CCR3 = PWM_ARR / 2;
+//     // 确保采样点在波谷（根据之前的调试，建议设在 ARR - 50 或 -100）
+//     TIM1->CCR4 = PWM_ARR - 100; 
+
+//     // 2. 强制产生一次更新事件，使 CCR 寄存器立即生效
+//     TIM1->EGR |= TIM_EGR_UG;
+
+//     // 3. 开启功率输出 (MOE) 并 启动定时器 (CEN)
+//     // 只有 CEN=1 后，定时器才开始计数，TRGO2 才会开始按频率产生
+//     TIM1->BDTR |= TIM_BDTR_MOE; 
+//     TIM1->CR1  |= TIM_CR1_CEN;
+
+//     // 4. 给自举电容充电和运放电路稳定留出时间
+//     delay_ms(200); 
+
+//     uint32_t sum_u = 0, sum_v = 0, sum_w = 0;
+//     const int samples = 2000; 
+
+//     // 5. 进入同步采样循环
+//     for(int i = 0; i < samples; i++) {
+//         // 等待硬件触发导致的注入组转换完成 (JEOS)
+//         // 注意：这里不需要 ADC_CR_JADSTART，硬件会自动触发
+//         uint32_t timeout = 100000;
+//         while(!(ADC2->ISR & ADC_ISR_JEOS) && timeout--);
+
+//         if(timeout == 0) {
+//             printf("Error: ADC Hardware Trigger Timeout! Check TRGO2 settings.\r\n");
+//             break;
+//         }
+
+//         sum_u += ADC1->JDR1;
+//         sum_v += ADC2->JDR1;
+//         sum_w += ADC2->JDR2;
+
+//         // 清除标志位，等待下一个 PWM 周期的自动触发
+//         ADC1->ISR |= ADC_ISR_JEOS;
+//         ADC2->ISR |= ADC_ISR_JEOS;
+//     }
+
+//     // 6. 计算平均偏移
+//     offset_u = (float)sum_u / samples;
+//     offset_v = (float)sum_v / samples;
+//     offset_w = (float)sum_w / samples;
+
+//     // 7. 校准结束，关闭输出（或者保持开启直接进入对齐阶段）
+//     TIM1->BDTR &= ~TIM_BDTR_MOE;
+//     // 如果后续紧接着对齐逻辑，可以不关 CEN，只改 CCR 即可
+
+//     printf("[Calib] Sync Done. U:%d, V:%d, W:%d\r\n", (int)offset_u, (int)offset_v, (int)offset_w);
+// }
+
+// 
+
 void Calibrate_Current_Offset(void) 
 {
-    printf("[System] Starting Dynamic Current Calibration...\r\n");
+    printf("[System] Starting Automatic Synchronous Calibration...\r\n");
 
-    // 1. 设置三相占空比为 50%（中值），并开启功率输出
-    // 此时电角度虽然在旋转，但三相电压相等，电机电流理论为 0
-    // 这样校准可以包含功率管开关带来的地弹噪声和电磁干扰
+   // 1. 强制占空比 50%，开启定时器产生触发信号
     TIM1->CCR1 = PWM_ARR / 2;
     TIM1->CCR2 = PWM_ARR / 2;
     TIM1->CCR3 = PWM_ARR / 2;
-    TIM1->BDTR |= TIM_BDTR_MOE; 
-    
-    // 给功率级和自举电容足够的稳定时间
-    delay_ms(500); 
+    TIM1->CCR4 = PWM_ARR - 50; // 预留 100 ticks 确保在下桥臂导通窗口内
+
+    TIM1->BDTR |= TIM_BDTR_MOE;
+    TIM1->CR1  |= TIM_CR1_CEN;
+    delay_ms(100);
+
+    // 2. 【最重要的一步】启动 ADC 的硬件触发监听模式
+    // 只有执行了这一步，ADC 才会开始等待 CCR4 的上升沿
+    ADC1->CR |= ADC_CR_JADSTART;
+    ADC2->CR |= ADC_CR_JADSTART;
 
     uint32_t sum_u = 0, sum_v = 0, sum_w = 0;
-    const int samples = 10000;
+    int success_count = 0;
 
-    // 2. 暂时关闭硬件触发，切换到软件手动触发采样
-    ADC1->JSQR &= ~ADC_JSQR_JEXTEN;
-    ADC2->JSQR &= ~ADC_JSQR_JEXTEN;
-
-    for(int i = 0; i < samples; i++) {
-        // 手动启动注入组转换
-        ADC1->CR |= ADC_CR_JADSTART;
-        ADC2->CR |= ADC_CR_JADSTART;
-        
-        // 等待转换完成 (使用 ADC2 作为同步参考)
-        uint32_t wait_timeout = 2000;
-        while(!(ADC2->ISR & ADC_ISR_JEOC) && wait_timeout--);
-
-        sum_u += ADC1->JDR1;
-        sum_v += ADC2->JDR1;
-        sum_w += ADC2->JDR2;
-
-        // 清除转换完成标志
-        ADC1->ISR |= ADC_ISR_JEOC; 
-        ADC2->ISR |= ADC_ISR_JEOC;
-    }
-
-    // 3. 计算最终偏移量
-    offset_u = (float)sum_u / (float)samples;
-    offset_v = (float)sum_v / (float)samples;
-    offset_w = (float)sum_w / (float)samples;
-
-    // 4. 恢复硬件触发模式 (准备进入 FOC 15kHz 中断逻辑)
-    // 假设你使用的是 TIM1_TRGO2 触发，Pos 通常根据 CubeMX 配置确定
-    ADC1->JSQR |= (1U << ADC_JSQR_JEXTEN_Pos);
-    ADC2->JSQR |= (1U << ADC_JSQR_JEXTEN_Pos);
-
-    // 5. 重要：校准完成后立即关闭 MOE 
-    // 防止在进入 FOC 逻辑前产生不必要的静态发热
-    TIM1->BDTR &= ~TIM_BDTR_MOE;
-
-    printf("[Calib] Dynamic Done. U:%d, V:%d, W:%d\r\n", (int)offset_u, (int)offset_v, (int)offset_w);
-
-    // 6. 检查硬件一致性
-    // 如果偏差过大，说明某相的运放电路或采样电阻可能存在硬件误差
-    if (fabs(offset_u - offset_v) > 30 || fabs(offset_u - offset_w) > 30) 
+    for(int i = 0; i < 2000; i++) 
     {
-        printf("WARNING: Phase Offset Imbalance! U-V:%.1f, U-W:%.1f\r\n", 
-                fabs(offset_u - offset_v), fabs(offset_u - offset_w));
+        uint32_t timeout = 200000;
+        // 3. 等待硬件触发完成 (JEOS 代表整个序列转换完成)
+        while(!(ADC2->ISR & ADC_ISR_JEOS) && timeout--);
+
+        if(timeout > 0) {
+            sum_u += ADC1->JDR1;
+            sum_v += ADC2->JDR1;
+            sum_w += ADC2->JDR2;
+            success_count++;
+            
+            // 4. 清除标志位，ADC 会自动等待下一个 PWM 周期的 CCR4 信号
+            ADC1->ISR |= ADC_ISR_JEOS;
+            ADC2->ISR |= ADC_ISR_JEOS;
+        }
     }
+
+    // 5. 停止监听（正式跑 FOC 时再开启）
+    // 注意：在正式 FOC 循环开始前，需再次执行 JADSTART 开启监听
+
+    if(success_count > 0) {
+        offset_u = (float)sum_u / success_count;
+        offset_v = (float)sum_v / success_count;
+        offset_w = (float)sum_w / success_count;
+        printf("[Calib] CCR4 Success! U:%.1f, V:%.1f, W:%.1f\r\n", offset_u, offset_v, offset_w);
+    } else {
+        printf("[Calib] FAILED: No Hardware Triggers detected.\r\n");
+    }
+
+    TIM1->BDTR &= ~TIM_BDTR_MOE;
 }
-
-
 

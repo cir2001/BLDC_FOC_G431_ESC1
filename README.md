@@ -31,3 +31,6 @@
 - main中将run_foc_flag = 0;Vd = 0.5f;Vq = 0.0f;，屏蔽timmer中断的所有pid计算，修改FOC_Align_Sensor(void)的manual_adjust，观察电机静态下id和iq的输出，iq在0附近，id在1.0附近
 - 同时确认iu，iv，iw除去的系数，
 ## 2026-01-18 V0.3.2 重新找零位备份
+## 2026-01-18 V0.3.3 电流环FOC PID控制 初步
+- 电流环FOC PID控制 初步实现，极性正确，低iq噪声大
+- ADC采样时机示波器观测前备份

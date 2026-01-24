@@ -14,6 +14,7 @@ void uart1_send_byte(u8 data);
 
 void uart2_init(u32 bound);
 void uart2_send_byte(u8 data);
+void VOFA_Send_UART2(float iq, float id, float ang, float vq, float vd);
 
 #endif	   
 

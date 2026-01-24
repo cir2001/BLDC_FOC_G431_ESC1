@@ -5,7 +5,6 @@
 
 // 函数原型
 uint16_t FOC_Align_Sensor(void);
-float Update_Electrical_Angle(uint16_t current_mech_angle, uint16_t zero_offset);
 
 #endif 
 

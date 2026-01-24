@@ -61,8 +61,9 @@ typedef enum { false = 0, true = 1 } bool;
 //-----------------------------------------
 void FOC_PreAlign(float vd_align, uint32_t duration_ms);
 void Reset_PID_Controllers(void);
+void TIM1_Force_Update_Test(u16 arr);
 //-----------------------------------------
-uint16_t my_zero_offset = 0;
+int16_t my_zero_offset = 0;
 //-----------------------------------------
 PID_Controller pid_id;
 PID_Controller pid_iq;
@@ -84,7 +85,6 @@ volatile uint8_t run_foc_flag = 0; // 0: 强制输出模式, 1: PID 闭环模式
 volatile uint32_t led_tick = 0;
 
 // 用于主循环打印的调试变量
-volatile float debug_theta = 0;
 volatile float debug_id = 0;
 volatile float debug_iq = 0;
 volatile float debug_Vq = 0;
@@ -93,7 +93,6 @@ volatile float debug_Vd = 0;
 volatile float debug_iu = 0;
 volatile float debug_iv = 0;
 volatile float debug_iw = 0;
-volatile float debug_mech_angle  = 0;
 
 extern float elec_angle;
 //================================================================================
@@ -121,32 +120,28 @@ int main(void) {
 
     // 2. 驱动层初始化
     TIM1_PWM_Init(5666);     // PWM 频率设置
-    delay_ms(100);
     printf("TIM1_PWM_Init Done...\r\n");
-
-    // 执行电角度校准，获取零位偏移
-    // 这个函数会强行给电机通电并对齐
-    my_zero_offset = FOC_Align_Sensor();
-    delay_ms(20);
-    printf("zero_offset: %d\r\n", my_zero_offset);
-    delay_ms(500);
-
-    OPAMP_Init_Registers();  
-    printf("OPAMP Initialized.\r\n");
     delay_ms(50);
+    OPAMP_Init_Registers(); 
+    printf("OPAMP Initialized.\r\n");
+    delay_ms(50); 
 
     ADC_Init_Registers();   
     printf("ADC Initialized.\r\n");
     delay_ms(50);
 
     // 电流零位校准 (零电流偏置)
-    // 此时 PWM 还没输出，电机电流为 0，正是采集 1.65V 偏置（约2048）的最佳时机 
     Calibrate_Current_Offset();
-    delay_ms(50);
     printf("Current offset calibration complete.\r\n");
     delay_ms(50);
 
-    // 可选：标定后立即验证一次零电流值（调试用）
+    // 执行电角度校准，获取零位偏移
+    // 这个函数会强行给电机通电并对齐
+    my_zero_offset = FOC_Align_Sensor();
+    printf("zero_offset: %d\r\n", my_zero_offset);
+    delay_ms(100);
+
+    // 标定后立即验证一次零电流值（调试用）
     ADC1->CR |= ADC_CR_JADSTART;
     ADC2->CR |= ADC_CR_JADSTART;
     while (!(ADC1->ISR & ADC_ISR_JEOC) && !(ADC2->ISR & ADC_ISR_JEOC));
@@ -154,11 +149,9 @@ int main(void) {
     ADC2->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
 
     delay_ms(100);
-    printf("Verify zero current raw: U=%lu, V=%lu, W=%lu\r\n",
-           ADC1->JDR1, ADC2->JDR1, ADC2->JDR2);
+    // printf("Verify zero current raw: U=%lu, V=%lu, W=%lu\r\n",
+    //        ADC1->JDR1, ADC2->JDR1, ADC2->JDR2);
     delay_ms(50);
-    // 重要：需要开启才能自启动
-    // TIM1->BDTR |= TIM_BDTR_MOE;
 
     // --- 速度环 (外环) ---
     target_speed = 10.0f;      
@@ -167,53 +160,31 @@ int main(void) {
     pid_speed.output_limit = 2.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    pid_id.kp = 0.8f;   pid_id.ki = 0.01f; 
-    pid_id.output_limit = 2.5; // 对应 SVPWM 最大电压 (1.0)
+    pid_id.kp = 10.0f;   pid_id.ki = 10.1f; 
+    pid_id.output_limit = 8.5; // 对应 SVPWM 最大电压 (1.0)
     
-    pid_iq.kp = 0.8f;   pid_iq.ki = 1.0f; 
-    pid_iq.output_limit = 2.5;
+    pid_iq.kp = 10.0f;   pid_iq.ki = 10.1f; 
+    pid_iq.output_limit = 8.5;
 
-    // --- 第四步：执行【开机预对齐】逻辑 ---
-    // FOC_PreAlign(0.5f, 1000);  // 锁死
-    // Vq = 0.0f;
-
-    // // // 完全松开（确保电压输出 0）
-    // Vd = 0.05f;
-    // Vq = 0.0f;
-    // FOC_SVPWM_Update(Vd, Vq, 0.0f);
-    // delay_ms(200);  // 800ms 彻底松开
-
-    // --- 第五步：简单自动启动（扰动 + 冲击） ---
-    // 先开启闭环
+    // // --- 启动 ---
     run_foc_flag = 1;
-
     // Vd = 1.0f; // 保持 PreAlign 函数中给的值
     // Vq = 0.0f;
 
-    // 反向小脉冲 + 正向冲击（模拟手拨）
-    // target_iq = 1.2f;  // 反向 1.2A
-    // delay_ms(100);
-    // target_iq = 0.0f;
-    // delay_ms(50);
-    // target_iq = -1.5f;   // 正向冲击 1.5A
-    // delay_ms(300);
-    // target_iq = 0.5f;   // 降回正常
-    // delay_ms(300);
     target_id = 0.0f;
-    target_iq = 1.0f;
-
+    target_iq = 0.5f;
 
     // 3. 启动控制
-    TIM1->DIER |= TIM_DIER_UIE;
+    TIM1->DIER |= TIM_DIER_UIE; // 开启中断，正式进入 FOC 闭环
     TIM1->BDTR |= TIM_BDTR_MOE;
     TIM1->CR1 |= TIM_CR1_CEN;    // 确保计数器在运行
+  
+    // printf("[System] FOC Loop Running. Target Iq: %.2f\r\n", target_iq);
+    // delay_ms(50);
 
-    printf("[System] FOC Loop Running. Target Iq: %.2f\r\n", target_iq);
-    delay_ms(50);
 // -------------------------- 主循环 --------------------------
     while (1) 
     {
-
     //-----------------------------------------------------
         led_tick++;
         if (led_tick >= 100000) // 每500ms翻转一次LED0
@@ -224,44 +195,6 @@ int main(void) {
      }
 }
 
-/**
- * @brief 强行将转子拉到电角度 0 度位置
- * @param vd_align 对齐电压（建议 0.15f ~ 0.25f）
- */
-void FOC_PreAlign(float vd_align, uint32_t duration_ms) {
-    printf("[System] Starting Pre-Align Ramp...\r\n");
-    
-    run_foc_flag = 0; // 强制进入预对齐模式（屏蔽中断里的 PID）
-
-    // 1. 爬升阶段：缓慢增加 Vd
-    for (int i = 0; i <= 100; i++) {
-        // 同步更新全局变量，这样中断里的打印和输出才能统一
-        Vd = (vd_align * i) / 100.0f; 
-        Vq = 0.0f; 
-        
-        // 强制角度为 0
-        FOC_SVPWM_Update(Vd, Vq, 0.0f); 
-        delay_ms(2);
-    }
-
-    // 2. 锁定阶段：保持高 Vd 锁定转子
-    printf("[System] Locking Rotor at Vd = %.2f...\r\n", Vd);
-
-    delay_ms(duration_ms);
-
-    // 3. 关键：清理 PID 积分记忆
-    Reset_PID_Controllers();
-    
-    printf("[System] Pre-Align Done.\r\n");
-}
-
-void Reset_PID_Controllers(void) {
-    // 仅重置结构体中存在的 integral 成员
-    pid_id.integral = 0.0f;
-    pid_iq.integral = 0.0f;
-    
-    pid_speed.integral = 0.0f;
-}
 
 
 

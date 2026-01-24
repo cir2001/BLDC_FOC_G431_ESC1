@@ -10,11 +10,14 @@
 #include "includes.h"					//ucos 使用	  
 #endif
 //////////////////////////////////////////////////////////////////////////////////	   
-//
-//********************************************************************************
-//修改说明
-//无
-////////////////////////////////////////////////////////////////////////////////// 	
+//--------------------------------------------------------------------------------
+typedef struct __attribute__((packed)) {
+    float data[5];    // Iq, Id, Angle, Vq, Vd
+    uint32_t tail;    // 帧尾: 0x7F800000
+} Vofa_Frame_t;
+
+Vofa_Frame_t vofa_frame = { .tail = 0x7F800000 };
+//-------------------------------------------------------------------------------
 //设置FLASH 保存地址(必须为偶数，且其值要大于本代码所占用FLASH的大小+0X08000000)
 #define FLASH_SAVE_ADDR  0X08010000 	
 u16 FalshSave[32];
@@ -74,6 +77,7 @@ void uart2_init(u32 bound)
 
     // 5. DMA1_Channel1 配置
     DMA1_Channel1->CPAR = (uint32_t)&USART2->TDR; // 外设地址
+    DMA1_Channel1->CMAR = (uint32_t)&vofa_frame;  // 【新增】关联 VOFA 缓冲区
     DMA1_Channel1->CCR = 0;                       // 复位
     DMA1_Channel1->CCR |= DMA_CCR_DIR;            // 从内存到外设
     DMA1_Channel1->CCR |= DMA_CCR_MINC;           // 内存地址递增
@@ -117,35 +121,57 @@ void uart2_send_byte(u8 data)
 //--------------------------------------------------------------------------
 // @brief  重定向 printf 到串口 2
 //--------------------------------------------------------------------------
-int _write(int file, char *ptr, int len)
-{
-    // 1. [关键] 检查并强制清除串口硬件错误标志
-    // 如果不清除 ORE(过载)、NE(噪声)、FE(帧错误)，串口会彻底罢工
-    if (USART2->ISR & (USART_ISR_ORE | USART_ISR_NE | USART_ISR_FE)) {
-        USART2->ICR |= (USART_ICR_ORECF | USART_ICR_NECF | USART_ICR_FECF);
-    }
+// int _write(int file, char *ptr, int len)
+// {
+//     // 1. [关键] 检查并强制清除串口硬件错误标志
+//     // 如果不清除 ORE(过载)、NE(噪声)、FE(帧错误)，串口会彻底罢工
+//     if (USART2->ISR & (USART_ISR_ORE | USART_ISR_NE | USART_ISR_FE)) {
+//         USART2->ICR |= (USART_ICR_ORECF | USART_ICR_NECF | USART_ICR_FECF);
+//     }
 
-    // 2. [关键] 增加超时保护，防止 DMA 计数器停滞导致死循环
-    uint32_t timeout = 50000; 
-    while(DMA1_Channel1->CNDTR != 0 && timeout--); 
+//     // 2. [关键] 增加超时保护，防止 DMA 计数器停滞导致死循环
+//     uint32_t timeout = 50000; 
+//     while(DMA1_Channel1->CNDTR != 0 && timeout--); 
 
-    if(timeout == 0) {
-        // 如果 DMA 卡住了，强行关闭通道并重置，放弃本次打印
-        DMA1_Channel1->CCR &= ~DMA_CCR_EN;
-        DMA1_Channel1->CNDTR = 0; 
-        return 0; 
-    }
+//     if(timeout == 0) {
+//         // 如果 DMA 卡住了，强行关闭通道并重置，放弃本次打印
+//         DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+//         DMA1_Channel1->CNDTR = 0; 
+//         return 0; 
+//     }
 
-    // 3. 正常 DMA 拷贝与发送
-    int send_len = (len < 256) ? len : 256;
-    memcpy(UART2_DMA_TX_BUF, ptr, send_len);
+//     // 3. 正常 DMA 拷贝与发送
+//     int send_len = (len < 256) ? len : 256;
+//     memcpy(UART2_DMA_TX_BUF, ptr, send_len);
     
-    DMA1_Channel1->CCR &= ~DMA_CCR_EN;
-    DMA1_Channel1->CMAR = (uint32_t)UART2_DMA_TX_BUF;
-    DMA1_Channel1->CNDTR = send_len;
-    DMA1->IFCR |= DMA_IFCR_CTCIF1;
-    DMA1_Channel1->CCR |= DMA_CCR_EN;
+//     DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+//     DMA1_Channel1->CMAR = (uint32_t)UART2_DMA_TX_BUF;
+//     DMA1_Channel1->CNDTR = send_len;
+//     DMA1->IFCR |= DMA_IFCR_CTCIF1;
+//     DMA1_Channel1->CCR |= DMA_CCR_EN;
 
-    return len;
+//     return len;
+// }
+
+/**
+ * @brief 通过 UART2 寄存器触发 DMA 发送数据到 VOFA+
+ */
+void VOFA_Send_UART2(float iq, float id, float ang, float vq, float vd) 
+{
+    // 1. 检查 DMA 是否还在传输上一帧 (CNDTR != 0 表示忙)
+    if (DMA1_Channel1->CNDTR != 0) return;
+
+    // 2. 填充最新数据
+    vofa_frame.data[0] = iq;
+    vofa_frame.data[1] = id;
+    vofa_frame.data[2] = ang;
+    vofa_frame.data[3] = vq;
+    vofa_frame.data[4] = vd;
+
+    // 3. 重新启动 DMA 传输
+    DMA1_Channel1->CCR &= ~DMA_CCR_EN;             // 关闭 DMA 通道以修改寄存器
+    DMA1->IFCR = DMA_IFCR_CTCIF1;         // 清除 Channel 1 传输完成标志位
+    DMA1_Channel1->CNDTR = sizeof(Vofa_Frame_t);   // 设置要发送的字节数 (24字节)
+    DMA1_Channel1->CCR |= DMA_CCR_EN;              // 开启 DMA，开始搬运
 }
 

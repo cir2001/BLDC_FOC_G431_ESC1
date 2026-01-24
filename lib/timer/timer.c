@@ -7,6 +7,7 @@
 #include "math.h"
 #include "adc_foc.h"
 #include <stdio.h>
+#include "usart.h"
 //////////////////////////////////////////////////////////////////////////////////	 
 //
 ////////////////////////////////////////////////////////////////////////////////// 	
@@ -27,11 +28,10 @@ float open_loop_angle = 0.0f;
 //外部变量声明
 //-----------------------------------------------
 extern PID_Controller vel_pid;
-extern uint16_t my_zero_offset;// 14位机械偏置 (0-16383)
+extern int16_t my_zero_offset;// 14位机械偏置 (0-16383)
 extern float offset_u, offset_v, offset_w;
 
 // 用于主循环打印的调试变量
-extern volatile float debug_theta;
 extern volatile float debug_id;
 extern volatile float debug_iq;
 extern volatile float debug_Vq;
@@ -40,7 +40,6 @@ extern volatile float debug_Vd;
 extern volatile float debug_iu;
 extern volatile float debug_iv;
 extern volatile float debug_iw;
-extern volatile float debug_mech_angle;
 
 volatile float debug_raw_u;
 volatile float debug_raw_v;
@@ -55,8 +54,12 @@ volatile float debug_Ibeta;
 volatile float debug_iq_filt;
 volatile float debug_id_filt;
 volatile float debug_elec_angle;
-//-----------------------------------------------
+volatile float debug_Valpha;
+volatile float debug_Vbeta;
 
+volatile float debug_speed_act = 0;
+volatile float debug_iq_target = 0;
+//-----------------------------------------------
 extern PID_Controller pid_id;
 extern PID_Controller pid_iq;
 
@@ -81,15 +84,9 @@ float actual_speed_filt = 0.0f; // 实际速度 (滤波后)
 float target_iq = 0.0f;         // 速度环的输出，作为电流环的输入
 float target_id = 0.0f;      
 
-static float last_mech_angle = 0.0f;
 static float i_d_f = 0.0f, i_q_f = 0.0f; // 电流滤波变量
 
 extern PID_Controller pid_id, pid_iq, pid_speed;
-extern uint16_t my_zero_offset;
-
-// 用于调试打印
-volatile float debug_speed_act = 0;
-volatile float debug_iq_target = 0;
 
 volatile float Vd = 0.0f;
 volatile float Vq = 0.0f;
@@ -110,30 +107,41 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
         // 1. 获取机械角度与电角度
         uint16_t angle_raw = FOC_ReadAngle_Optimized();
-        if ((angle_raw & 0x4000) || angle_raw == 0x3FFF) return; 
+        uint16_t raw_val = angle_raw & 0x3FFF;
 
-        int32_t raw_diff = ((int16_t)(angle_raw & 0x3FFF) - (int16_t)my_zero_offset)*7;
-        raw_diff = raw_diff % 16384;
-        if (raw_diff < 0) raw_diff += 16384;
-        
-        float elec_angle = 6.2831853f-((float)raw_diff * (6.2831853f / 16384.0f));
+        // 2. 计算机械角度偏差（带环形处理）
+        int32_t mech_diff = (int32_t)raw_val - (int32_t)my_zero_offset;
+        if (mech_diff < 0) mech_diff += 16384;
+
+        // 3. 【核心修正】因为你逆时针转动时 raw_val 在减小
+        // 我们用总程减去当前偏差，将其反转为“增加”
+        mech_diff = (16384 - mech_diff) % 16384; 
+
+        // 4. 计算电角度 (机械差 * 极对数 7)
+        int32_t elec_diff = (mech_diff * 7) % 16384; 
+
+        // 5. 转换为 0 ~ 2*PI 弧度
+        // 此时：逆时针旋转 -> mech_diff 增加 -> elec_angle 从 0 变向 6.28
+        float elec_angle = (float)elec_diff * (6.2831853f / 16384.0f);
+
+        // elec_angle -= 1.57f; 
 
         debug_elec_angle = elec_angle;      
-        // debug_mech_angle = mech_angle;
-
-        // while(elec_angle >= 6.2831853f) elec_angle -= 6.2831853f;
-        // while(elec_angle < 0)           elec_angle += 6.2831853f;
-
-
+ 
         uint32_t timeout = 1000;
-        while(!(ADC2->ISR & ADC_ISR_JEOC) && timeout--);
+        while(!(ADC2->ISR & ADC_ISR_JEOS) && timeout--); 
+
 
         // 3. 电流环逻辑 (15kHz)
         // 1. 计算原始偏差（ADC值 - 你的静态偏置）
-        float raw_u = (float)ADC1->JDR1 - offset_u;
-        float raw_v = (float)ADC2->JDR1 - offset_v; 
-        float raw_w = (float)ADC2->JDR2 - offset_w; 
+        int32_t raw_u = (int32_t)(ADC1->JDR1 & 0x0FFF) - (int32_t)offset_u;
+        int32_t raw_w = (int32_t)(ADC2->JDR1 & 0x0FFF) - (int32_t)offset_v;
+        int32_t raw_v = (int32_t)(ADC2->JDR2 & 0x0FFF) - (int32_t)offset_w;
 
+        // 必须同时清除 ADC1 和 ADC2 的标志位
+        ADC1->ISR |= ADC_ISR_JEOS; 
+        ADC2->ISR |= ADC_ISR_JEOS;
+ 
         debug_raw_u = raw_u;
         debug_raw_v = raw_v;
         debug_raw_w = raw_w;
@@ -143,9 +151,11 @@ void TIM1_UP_TIM16_IRQHandler(void)
         float com = sum * 0.33333333f; // sum / 3.0f
         raw_u -= com; raw_v -= com; raw_w -= com;
 
-        float iu = (raw_u) / 10.0f;
-        float iv = (raw_v) / 10.0f;
-        float iw = (raw_w) / 10.0f;
+        // 3. 计算实际电流 (根据硬件增益调整比例系数)
+        const float LSB_PER_AMP = 10.0f; 
+        float iu = raw_u / LSB_PER_AMP;
+        float iv = raw_v / LSB_PER_AMP;
+        float iw = raw_w / LSB_PER_AMP;
 
         debug_iu = iu;
         debug_iv = iv;
@@ -160,7 +170,9 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_Ialpha = i_alpha;
         debug_Ibeta = i_beta;
 
-        // elec_angle=0.0f;     
+        // === zero offset 0位对齐 ===
+        // elec_angle = 0.0f;     
+
         // 使用 CORDIC 计算 Sin/Cos
         float st, ct;
         CORDIC_SinCos(elec_angle, &st, &ct);
@@ -180,105 +192,92 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_id_filt = i_d_f;
 
         // --- 4. 控制模式分流 (核心修改) ---
-        float out_angle;
+ 
         if (run_foc_flag == 1) 
         {
-            // PID 计算 Vd, Vq
+            // ===== PID 计算 Vd, Vq ======
             Vd = PID_Calc(&pid_id, target_id, i_d_f);
             float Vq_pid = PID_Calc(&pid_iq, target_iq, i_q_f);
             
             Vq = Vq_pid;
             // Vd = 0.0f; 
-            // Vq = 0.3;
-            // out_angle = elec_angle;
-            
-            // --- 5. 逆变换与输出 ---
-            // 逆 Park 变换
-            Valpha = Vd * ct - Vq * st;
-            Vbeta  = Vd * st + Vq * ct;
-        }
-        else 
-        {
-            // ======= 强制模式：预对齐 =======
-            // Vd, Vq 此时保持由 FOC_PreAlign 函数传入的固定值
-            out_angle = elec_angle; // 强行指向 0 度（U相轴线）
-            Vd = 1.0f; // 保持 PreAlign 函数中给的值
-            Vq = 0.0f;
+            // Vq = 0.5f;
 
-            float s, c;
-            CORDIC_SinCos(out_angle, &s, &c);
-            Valpha = Vd * c - Vq * s;
-            Vbeta  = Vd * s + Vq * c;
-
-            // ======= 修改后的开环旋转逻辑 =======
+            // ===== 开环旋转逻辑 判断电角度与旋转方向的正确性，调整pwm输出的相序 ========
             // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
             // if(open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
 
-            // out_angle = open_loop_angle; 
+            // // 开环验证模式下，强制使用开环角度计算 Sin/Cos
+            // CORDIC_SinCos(open_loop_angle, &st, &ct);
             // Vd = 0.0f;
-            // Vq = 0.3f; // 维持一个足以带动物理转子的电压
+            // Vq = 0.8f;       
         }
+        else 
+        {
+            // 动态测试，IU，Iv，Iw 验证线序，应该是正弦波，出峰先U再V然后W
+            // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
+            // if(open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
+            // CORDIC_SinCos(open_loop_angle, &st, &ct);
+            // Vd = 0.0f; 
+            // Vq = 0.5f;
+
+            // ======= 强制模式：预对齐 =======
+            CORDIC_SinCos(0.0f, &st, &ct); // 对齐 0 度
+            Vd = 0.5f; 
+            Vq = 0.0f;
+        }
+        //====== 逆变换与输出 ==========
+        // 逆 Park 变换
+        Valpha = Vd * ct - Vq * st;
+        Vbeta  = Vd * st + Vq * ct;
 
         debug_Vq = Vq;
         debug_Vd = Vd;
+
+        debug_Valpha = Valpha;
+        debug_Vbeta = Vbeta;
         
         // SVPWM 调制输出到寄存器
         SVPWM_Output_Standard(Valpha, Vbeta);
         
         debug_speed_act = actual_speed_filt;
         debug_iq_target = target_iq;
-
-        ADC1->ISR |= ADC_ISR_JEOC;
-        ADC2->ISR |= ADC_ISR_JEOC;
         
         // LED 翻转逻辑
         if (Timer1_Counter >= 1500) 
         { // 15kHz下，7500次是500ms
             Timer1_Counter = 0;
             LED0_TOGGLE();
-            // printf("IU:%.2f, IV:%.2f, IW:%.2f\r\n",debug_iu, debug_iv,debug_iw);
+
+            VOFA_Send_UART2(debug_iq, debug_id, elec_angle, debug_Vq,debug_Vd);
+
+            // 验证U，V，W线序
+            // printf("IU:%.2f, IV:%.2f, IW:%.2f,elec_angle: %.2f\r\n",debug_iu, debug_iv,debug_iw,elec_angle);
             
             // printf("raw_u:%.2f,raw_v:%.2f,raw_w:%.2f\r\n",debug_raw_u, debug_raw_v, debug_raw_w);
 
             // printf("Ialpha:%.2f,Ibeta:%.2f\r\n",debug_Ialpha, debug_Ibeta);
 
-            // printf("id:%.2f, iq:%.2f,id_f:%.2f, iq_f:%.2f\r\n",debug_id, debug_iq,debug_id_filt, debug_iq_filt);
-
             // printf("IUIV:%.2f, IW:%.2f,IU_filt:%.2f, IV_filt:%.2f, IW_filt:%.2f\r\n", 
                     // debug_iu, debug_iv,debug_iw, debug_iu_filt, debug_iv_filt, debug_iw_filt);
-
-            // printf("Vq:%.2f, Vd:%.2f\r\n",debug_Vq, debug_Vd);
-
-            // printf("IU:%.2f, IV:%.2f, IW:%.2f,IU_filt:%.2f, IV_filt:%.2f, IW_filt:%.2f\r\n", 
-            //         debug_iu, debug_iv,debug_iw, debug_iu_filt, debug_iv_filt, debug_iw_filt);
-            
-            // printf("Vd:%.2f, id:%.2f\r\n", debug_Vd, debug_id);
-
-            // printf("iq:%.2f, id:%.2f,Ialpha:%.2f,Ibeta:%.2f\r\n", 
-            //         debug_iq_filt, debug_id_filt,debug_Ialpha, debug_Ibeta);
-
-           
-            // printf("CCR4: %d, ARR: %d\n", TIM1->CCR4, TIM1->ARR);
-
-            // printf("angle_raw: %d\r\n",angle_raw);
-
-            // printf("elec_angle:%.2f, mech_angle:%.2f\r\n", 
-            //         elec_angle, mech_angle);
-
-            // printf("iq:%.2f, id:%.2f, Vq:%.2f, Vd:%.2f, Flag:%d\r\n", 
-            //         debug_iq, debug_id, debug_Vq, debug_Vd, run_foc_flag);
 
             // printf("Target:%.2f, Act:%.2f, Iq_Ref:%.2f, Iq_Act:%.2f\r\n", 
             //         target_speed, actual_speed_filt, target_iq, debug_iq);
 
             //开环，vd=1.0f，zero offset观测
-            // printf("iq:%.2f, id:%.2f,Vq:%.2f,Vd:%.2f,angle_raw: %d\r\n", 
-            //         debug_iq, debug_id,debug_Vq, debug_Vd,angle_raw);
+            // printf("iq:%.2f, id:%.2f,Vq:%.2f,Vd:%.2f,mech: %d,elec_angle: %.2f\r\n", 
+            //         debug_iq, debug_id,debug_Vq, debug_Vd,angle_raw,elec_angle);
 
-            // printf("T:%.2f, R:%.2f, Vq:%.2f\r\n", target_iq, debug_iq_filt, debug_Vq);
+              // printf("CCR1: %d,CCR4: %d\n",TIM1->CCR1,TIM1->CCR4);
 
-            printf("iq:%.2f,id:%.2f,Vq:%.2f,Vd:%.2f,Tq:%.2f,Td:%.2f,eAngle:%.2f\r\n", 
-                    debug_iq,debug_id,debug_Vq,debug_Vd, target_iq, target_id, debug_elec_angle);
+            // printf("Ibeta:%.2f,Vbeta:%.2f,elec_angle:%.2f\r\n", debug_Ibeta,debug_Vbeta,elec_angle);
+
+            // printf("iq:%.2f, id:%.2f,Vq:%.2f,Vd:%.2f,T_iq:%.2f,T_id:%.2f,elec_angle: %.2f\r\n", 
+            //         debug_iq, debug_id,debug_Vq, debug_Vd,target_iq,target_id,elec_angle);
+
+            // printf("angle_raw: %d,elec_angle: %.2f\r\n", angle_raw, elec_angle);
+
+            // printf("CCR1:%4d,CCR2:%4d,CCR3:%4d\r\n",TIM1->CCR1, TIM1->CCR2, TIM1->CCR3);
 
         }
 
@@ -297,10 +296,9 @@ void TIM1_PWM_Init(u16 arr)
     RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN | RCC_AHB2ENR_GPIOBEN | RCC_AHB2ENR_GPIOCEN;
     RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
 
-    // 2. 引脚速度
-    GPIOA->OSPEEDR |= (3U << (8 * 2)) | (3U << (9 * 2)) | (3U << (10 * 2)) | (3U << (12 * 2));
-    GPIOB->OSPEEDR |= (3U << (15 * 2));
-    GPIOC->OSPEEDR |= (3U << (13 * 2));
+    GPIO_Set(GPIOA,PIN8|PIN9|PIN10|PIN11|PIN12,GPIO_MODE_AF,GPIO_OTYPE_PP,GPIO_SPEED_170M,GPIO_PUPD_PU); 
+    GPIO_Set(GPIOB,PIN9|PIN15,GPIO_MODE_AF,GPIO_OTYPE_PP,GPIO_SPEED_170M,GPIO_PUPD_PU); 
+    GPIO_Set(GPIOC,PIN13,GPIO_MODE_AF,GPIO_OTYPE_PP,GPIO_SPEED_170M,GPIO_PUPD_PU); 
 
     // 3. 复位 AF 映射 (AF6 为 TIM1)
     GPIO_AF_Set(GPIOA, 8, 6); 
@@ -309,6 +307,9 @@ void TIM1_PWM_Init(u16 arr)
     GPIO_AF_Set(GPIOC, 13, 4); 
     GPIO_AF_Set(GPIOA, 12, 6); 
     GPIO_AF_Set(GPIOB, 15, 4);
+
+    //PA11 才是 TIM1_CH4，AF 映射为 6 TIM1_CH4用于示波器监测CCR4
+    GPIO_AF_Set(GPIOA, 11, 11);  // PA11 AF6 = TIM1_CH4
 
     // 4. 基础设置
     TIM1->ARR = arr;
@@ -327,17 +328,29 @@ void TIM1_PWM_Init(u16 arr)
     TIM1->CCMR2 |= (6 << TIM_CCMR2_OC3M_Pos) | TIM_CCMR2_OC3PE;
 
     // --- 配置 CH4 作为 ADC 触发源 ---
-    TIM1->CCMR2 &= ~TIM_CCMR2_OC4M;
-    TIM1->CCMR2 |= (6 << TIM_CCMR2_OC4M_Pos) | TIM_CCMR2_OC4PE; // CH4 同样设为 PWM 模式 1
-    TIM1->CCR4 = arr - 50;   
-    // --- 【关键修改：映射 TRGO2 到 OC4REF】 ---
-    TIM1->CR2 &= ~TIM_CR2_MMS2;
-    TIM1->CR2 |= (4U << 20);    // 0100: OC4REF 信号映射到 TRGO2     
-    TIM1->CCER |= TIM_CCER_CC4E;    // 使能 OC4（内部产生 REF 信号）
+    // TIM1->CCMR2 &= ~TIM_CCMR2_OC4M;
+    // TIM1->CCMR2 |= (6 << TIM_CCMR2_OC4M_Pos) | TIM_CCMR2_OC4PE; // CH4 同样设为 PWM 模式 1
+
+    //---示波器检测，如跳出ADC采样观测，屏蔽下面两条语句，恢复上面两条语句
+    // --- 【修改点 2】 配置 CH4 作为示波器观测和 ADC 触发 ---
+    // 建议改为 PWM 模式 2，这样在靠近 ARR (顶点) 时，PA11 会输出一个高电平窄脉冲
+    TIM1->CCMR2 &= ~(TIM_CCMR2_OC4M | (1U << 24));
+    // TIM1->CCMR2 |= (7 << TIM_CCMR2_OC4M_Pos) | TIM_CCMR2_OC4PE; // 7 = PWM Mode 2
+    TIM1->CCMR2 |= (7U << TIM_CCMR2_OC4M_Pos) | TIM_CCMR2_OC4PE;
+
+    // 初始触发位置：距离顶点 50 个计数值
+    // 这样 ADC 会在 CNT 向上计数到 (arr-50) 时触发，留给 ADC 转换一定的硬件建立时间
+    TIM1->CCR4 = arr - 100;
+
+    // --- 【映射 TRGO2 到 OC4REF】 ---
+    // TIM1->CR2 &= ~TIM_CR2_MMS2;
+    // TIM1->CR2 |= (4U << 20);    // 0100: OC4REF 信号映射到 TRGO2     
 
     // 8. 使能输出
-    TIM1->CCER |= (TIM_CCER_CC1E | TIM_CCER_CC1NE | TIM_CCER_CC2E |
-                   TIM_CCER_CC2NE | TIM_CCER_CC3E | TIM_CCER_CC3NE | TIM_CCER_CC4E);
+    TIM1->CCER |= (TIM_CCER_CC1E | TIM_CCER_CC1NE | 
+                   TIM_CCER_CC2E | TIM_CCER_CC2NE | 
+                   TIM_CCER_CC3E | TIM_CCER_CC3NE | 
+                   TIM_CCER_CC4E);
 
     // 9. 死区与主输出
     TIM1->BDTR &= ~TIM_BDTR_DTG;
@@ -391,18 +404,18 @@ void SVPWM_Output_Standard(float Valpha, float Vbeta)
     uint16_t ccr2 = (uint16_t)(Tb * PWM_ARR);
     uint16_t ccr3 = (uint16_t)(Tc * PWM_ARR);
 
-    uint16_t max_ccr = PWM_ARR - 400; 
+    uint16_t max_ccr = PWM_ARR - 200; 
     if (ccr1 > max_ccr) ccr1 = max_ccr;
     if (ccr2 > max_ccr) ccr2 = max_ccr;
     if (ccr3 > max_ccr) ccr3 = max_ccr;
 
     // 7. 写入寄存器
-    TIM1->CCR1 = ccr1;
-    TIM1->CCR2 = ccr2;
-    TIM1->CCR3 = ccr3;
+    TIM1->CCR1 = ccr2;
+    TIM1->CCR2 = ccr3;
+    TIM1->CCR3 = ccr1;
 
     // 8. 更新采样点 (CCR4 保持在波谷附近)
-    TIM1->CCR4 = (uint16_t)(PWM_ARR - 50);
+    TIM1->CCR4 = (uint16_t)(PWM_ARR - 100);
 }
 
 float PID_Calc(PID_Controller* pid, float target, float current) 
@@ -504,12 +517,12 @@ void FOC_SVPWM_Update(float Vd, float Vq, float angle)
     if (ccr3 > max_ccr) ccr3 = max_ccr;
 
     // === 7. 写入寄存器 ===
-    TIM1->CCR1 = ccr1;
+    TIM1->CCR1 = ccr3;
     TIM1->CCR2 = ccr2;
-    TIM1->CCR3 = ccr3;
+    TIM1->CCR3 = ccr1;
 
     // === 8. 更新采样触发点 (CCR4) ===80
-    TIM1->CCR4 = 150; 
+    TIM1->CCR4 = PWM_ARR - 100; 
 }
 
 

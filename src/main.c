@@ -171,19 +171,19 @@ int main(void) {
     pid_speed.output_limit = 2.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    pid_id.kp = 0.65f;   pid_id.ki = 0.00f; 
-    pid_id.output_limit = 8.5; // 对应 SVPWM 最大电压 (1.0)
+    pid_id.kp = 50.0f;   pid_id.ki = 25.0f; 
+    pid_id.output_limit = 200.0f; // 对应 SVPWM 最大电压 (1.0)
     
-    pid_iq.kp = 0.3f;   pid_iq.ki = 0.00f; 
-    pid_iq.output_limit = 8.5;
+    pid_iq.kp = 50.0f;   pid_iq.ki = 25.0f; 
+    pid_iq.output_limit = 200.0f; // 对应 SVPWM 最大电压
 
     // // --- 启动 ---
-    run_foc_flag = 0;
+    run_foc_flag = 1;
     // Vd = 1.0f; // 保持 PreAlign 函数中给的值
     // Vq = 0.0f;
 
     target_id = 0.0f;
-    target_iq = 0.5f;
+    target_iq = -2.0f;
 
     // 3. 启动控制
     TIM1->DIER |= TIM_DIER_UIE; // 开启中断，正式进入 FOC 闭环

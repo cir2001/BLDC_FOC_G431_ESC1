@@ -136,8 +136,8 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
         // 3. 电流环逻辑 (15kHz)
         // 1. 计算原始偏差（ADC值 - 你的静态偏置）
-        int32_t raw_v= (int32_t)(ADC1->JDR1 & 0x0FFF) - (int32_t)offset_u;
-        int32_t raw_w = (int32_t)(ADC2->JDR1 & 0x0FFF) - (int32_t)offset_v;
+        int32_t raw_w= (int32_t)(ADC1->JDR1 & 0x0FFF) - (int32_t)offset_u;
+        int32_t raw_v = (int32_t)(ADC2->JDR1 & 0x0FFF) - (int32_t)offset_v;
         int32_t raw_u = (int32_t)(ADC2->JDR2 & 0x0FFF) - (int32_t)offset_w;
 
         // 必须同时清除 ADC1 和 ADC2 的标志位
@@ -173,7 +173,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_Ibeta = i_beta;
 
         // // === zero offset 0位对齐 ===
-        elec_angle = 0.0f;     
+        // elec_angle = 0.0f;     
 
         // 使用 CORDIC 计算 Sin/Cos
         float st, ct;
@@ -198,14 +198,14 @@ void TIM1_UP_TIM16_IRQHandler(void)
         if (run_foc_flag == 1) 
         {
             // ===== PID 计算 Vd, Vq ======
-            // Vd = PID_Calc(&pid_id, target_id, i_d_f);
+            Vd = PID_Calc(&pid_id, target_id, i_d_f);
             float Vq_pid = PID_Calc(&pid_iq, target_iq, i_q_f);
             
-            Vd = 0.0f;
             Vq = Vq_pid;
+            // Vd = 0.0f;
 
             // Vd = 0.0f; 
-            // Vq = -0.5f;
+            // Vq = 0.5f;
 
             // ===== 开环旋转逻辑 判断电角度与旋转方向的正确性，调整pwm输出的相序 ========
             // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
@@ -219,17 +219,17 @@ void TIM1_UP_TIM16_IRQHandler(void)
         else 
         {
             // 动态测试，IU，Iv，Iw 验证线序，应该是正弦波，出峰先U再V然后W
-            // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
-            // if (open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
-            // if (open_loop_angle < 0.0f)       open_loop_angle += 6.2831853f; 
-            // CORDIC_SinCos(open_loop_angle, &st, &ct);
-            // Vd = 0.0f; 
-            // Vq =0.5f;
+            open_loop_angle += 0.0005f; // 步进值，控制旋转速度
+            if (open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
+            if (open_loop_angle < 0.0f)       open_loop_angle += 6.2831853f; 
+            CORDIC_SinCos(open_loop_angle, &st, &ct);
+            Vd = 0.0f; 
+            Vq = 0.5f;
 
             // ======= 强制模式：预对齐 =======
-            // CORDIC_SinCos(0.5f, &st, &ct); // 对齐 0 度
-            Vd = 0.5f; 
-            Vq = 0.0f;
+            // CORDIC_SinCos(0.0f, &st, &ct); // 对齐 0 度
+            // Vd = 0.5f; 
+            // Vq = 0.0f;
         }
         //====== 逆变换与输出 ==========
         // 逆 Park 变换
@@ -260,7 +260,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
                 // 记录你关心的闭环数据
                 DataLog[write_bank][write_ptr][0].f = debug_iq_filt;
                 DataLog[write_bank][write_ptr][1].f = debug_id_filt;
-                DataLog[write_bank][write_ptr][2].f = debug_iw; // 建议观察电角度
+                DataLog[write_bank][write_ptr][2].f = debug_Vq; // 建议观察电角度
                 DataLog[write_bank][write_ptr][3].u = 0x7F800000;      // VOFA 结束符
                 
                 write_ptr++;
@@ -277,36 +277,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         { // 15kHz下，7500次是500ms
             Timer1_Counter = 0;
             LED0_TOGGLE();
-
-            // 验证U，V，W线序
-            // printf("IU:%.2f, IV:%.2f, IW:%.2f,elec_angle: %.2f\r\n",debug_iu, debug_iv,debug_iw,elec_angle);
-            
-            // printf("raw_u:%.2f,raw_v:%.2f,raw_w:%.2f\r\n",debug_raw_u, debug_raw_v, debug_raw_w);
-
-            // printf("Ialpha:%.2f,Ibeta:%.2f\r\n",debug_Ialpha, debug_Ibeta);
-
-            // printf("Target:%.2f, Act:%.2f, Iq_Ref:%.2f, Iq_Act:%.2f\r\n", 
-            //         target_speed, actual_speed_filt, target_iq, debug_iq);
-
-            //开环，vd=1.0f，zero offset观测
-            // printf("iq:%.2f, id:%.2f,Vq:%.2f,Vd:%.2f,mech: %d,elec_angle: %.2f\r\n", 
-            //         debug_iq, debug_id,debug_Vq, debug_Vd,angle_raw,elec_angle);
-
-              // printf("CCR1: %d,CCR4: %d\n",TIM1->CCR1,TIM1->CCR4);
-
-            // printf("Ibeta:%.2f,Vbeta:%.2f,elec_angle:%.2f\r\n", debug_Ibeta,debug_Vbeta,elec_angle);
-
-            // printf("iq:%.2f, id:%.2f,Vq:%.2f,Vd:%.2f,T_iq:%.2f,T_id:%.2f,elec_angle: %.2f\r\n", 
-            //         debug_iq, debug_id,debug_Vq, debug_Vd,target_iq,target_id,elec_angle);
-
-            // printf("angle_raw: %d,elec_angle: %.2f\r\n", angle_raw, elec_angle);
-
-            // printf("CCR1:%4d,CCR2:%4d,CCR3:%4d\r\n",TIM1->CCR1, TIM1->CCR2, TIM1->CCR3);
-
         }
-
-
-        //  TIM1->SR &= ~TIM_SR_UIF;
     }
 }
 //==============================================

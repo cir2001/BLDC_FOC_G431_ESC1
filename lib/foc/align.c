@@ -73,8 +73,8 @@ uint16_t FOC_Align_Sensor(void)
 
     // --- 阶段 4: 结果应用 ---
     // manual_adjust 补偿：如果你的 Clarke 变换以 U 轴为 0 度，
-    // 而电流环运行时发现输出异常，可在此微调。 
-    int16_t manual_adjust = 0; 
+    // 而电流环运行时发现输出异常，可在此微调。 500
+    int16_t manual_adjust = 500; 
     uint16_t final_offset = (uint16_t)((zero_offset + manual_adjust) & 0x3FFF);
 
     // 结束时不要立刻断电，保持一个微弱占空比防止转子滑走，直到进入 FOC 循环

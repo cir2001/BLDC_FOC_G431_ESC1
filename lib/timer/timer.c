@@ -8,18 +8,21 @@
 #include "adc_foc.h"
 #include <stdio.h>
 #include "usart.h"
-//////////////////////////////////////////////////////////////////////////////////	 
-//
-////////////////////////////////////////////////////////////////////////////////// 	
-//-----------------------------------------------
-//-----------------------------------------------
+//-----------------------------------------------------
 // --- 宏定义与常量 ---
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
 #endif
 #define SQRT3 0.577350269f
-
 #define POLE_PAIRS 7
+//-------------------------------------------------
+// 双缓冲区
+VofaData_t DataLog[2][SAMPLE_NUM][FRAME_SIZE];
+
+volatile uint8_t  write_bank = 0;    // 当前正在写入哪个缓冲 (0 或 1)
+volatile uint32_t write_ptr = 0;     // 写入指针
+volatile uint8_t  bank_ready = 0xFF; // 哪一个缓冲准备好了发送 (0, 1 或 0xFF表示无)
+volatile uint8_t  is_dma_busy = 0;   // DMA 发送状态
 //-----------------------------------------------
 // 外部函数声明
 //-----------------------------------------------
@@ -63,7 +66,7 @@ volatile float debug_iq_target = 0;
 extern PID_Controller pid_id;
 extern PID_Controller pid_iq;
 
-extern  volatile uint8_t run_foc_flag;
+extern volatile uint8_t run_foc_flag;
 //-----------------------------------------------
 // 变量声明
 //-----------------------------------------------
@@ -124,19 +127,18 @@ void TIM1_UP_TIM16_IRQHandler(void)
         // 此时：逆时针旋转 -> mech_diff 增加 -> elec_angle 从 0 变向 6.28
         float elec_angle = (float)elec_diff * (6.2831853f / 16384.0f);
 
-        // elec_angle -= 1.57f; 
+        // elec_angle -= 0.8f; 
 
         debug_elec_angle = elec_angle;      
  
-        uint32_t timeout = 1000;
-        while(!(ADC2->ISR & ADC_ISR_JEOS) && timeout--); 
-
+        // uint32_t timeout = 1000;
+        // while(!(ADC2->ISR & ADC_ISR_JEOS) && timeout--); 
 
         // 3. 电流环逻辑 (15kHz)
         // 1. 计算原始偏差（ADC值 - 你的静态偏置）
-        int32_t raw_u = (int32_t)(ADC1->JDR1 & 0x0FFF) - (int32_t)offset_u;
+        int32_t raw_v= (int32_t)(ADC1->JDR1 & 0x0FFF) - (int32_t)offset_u;
         int32_t raw_w = (int32_t)(ADC2->JDR1 & 0x0FFF) - (int32_t)offset_v;
-        int32_t raw_v = (int32_t)(ADC2->JDR2 & 0x0FFF) - (int32_t)offset_w;
+        int32_t raw_u = (int32_t)(ADC2->JDR2 & 0x0FFF) - (int32_t)offset_w;
 
         // 必须同时清除 ADC1 和 ADC2 的标志位
         ADC1->ISR |= ADC_ISR_JEOS; 
@@ -152,10 +154,10 @@ void TIM1_UP_TIM16_IRQHandler(void)
         raw_u -= com; raw_v -= com; raw_w -= com;
 
         // 3. 计算实际电流 (根据硬件增益调整比例系数)
-        const float LSB_PER_AMP = 10.0f; 
-        float iu = raw_u / LSB_PER_AMP;
-        float iv = raw_v / LSB_PER_AMP;
-        float iw = raw_w / LSB_PER_AMP;
+        const float LSB_PER_AMP = -10.0f; 
+        float iu = (float)raw_u / LSB_PER_AMP;
+        float iv = (float)raw_v / LSB_PER_AMP;
+        float iw = (float)raw_w / LSB_PER_AMP;
 
         debug_iu = iu;
         debug_iv = iv;
@@ -170,13 +172,13 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_Ialpha = i_alpha;
         debug_Ibeta = i_beta;
 
-        // === zero offset 0位对齐 ===
-        // elec_angle = 0.0f;     
+        // // === zero offset 0位对齐 ===
+        elec_angle = 0.0f;     
 
         // 使用 CORDIC 计算 Sin/Cos
         float st, ct;
         CORDIC_SinCos(elec_angle, &st, &ct);
-
+        // CORDIC_SinCos(open_loop_angle, &st, &ct);
         // Park 变换
         float i_d = i_alpha * ct + i_beta * st;
         float i_q = -i_alpha * st + i_beta * ct;
@@ -196,12 +198,14 @@ void TIM1_UP_TIM16_IRQHandler(void)
         if (run_foc_flag == 1) 
         {
             // ===== PID 计算 Vd, Vq ======
-            Vd = PID_Calc(&pid_id, target_id, i_d_f);
+            // Vd = PID_Calc(&pid_id, target_id, i_d_f);
             float Vq_pid = PID_Calc(&pid_iq, target_iq, i_q_f);
             
+            Vd = 0.0f;
             Vq = Vq_pid;
+
             // Vd = 0.0f; 
-            // Vq = 0.5f;
+            // Vq = -0.5f;
 
             // ===== 开环旋转逻辑 判断电角度与旋转方向的正确性，调整pwm输出的相序 ========
             // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
@@ -216,13 +220,14 @@ void TIM1_UP_TIM16_IRQHandler(void)
         {
             // 动态测试，IU，Iv，Iw 验证线序，应该是正弦波，出峰先U再V然后W
             // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
-            // if(open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
+            // if (open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
+            // if (open_loop_angle < 0.0f)       open_loop_angle += 6.2831853f; 
             // CORDIC_SinCos(open_loop_angle, &st, &ct);
             // Vd = 0.0f; 
-            // Vq = 0.5f;
+            // Vq =0.5f;
 
             // ======= 强制模式：预对齐 =======
-            CORDIC_SinCos(0.0f, &st, &ct); // 对齐 0 度
+            // CORDIC_SinCos(0.5f, &st, &ct); // 对齐 0 度
             Vd = 0.5f; 
             Vq = 0.0f;
         }
@@ -242,14 +247,36 @@ void TIM1_UP_TIM16_IRQHandler(void)
         
         debug_speed_act = actual_speed_filt;
         debug_iq_target = target_iq;
-        
+
+        // --- 5. 数据记录逻辑 (增加 10 倍下采样) ---
+        static uint16_t log_downsample_cnt = 0; // 静态计数器
+        log_downsample_cnt++;
+
+        if (log_downsample_cnt >= 10) { // 每 10 次中断记录一次
+            log_downsample_cnt = 0;     // 重置计数器
+
+            // 如果当前缓冲区没在发送，就记录
+            if (bank_ready != write_bank) {
+                // 记录你关心的闭环数据
+                DataLog[write_bank][write_ptr][0].f = debug_iq_filt;
+                DataLog[write_bank][write_ptr][1].f = debug_id_filt;
+                DataLog[write_bank][write_ptr][2].f = debug_iw; // 建议观察电角度
+                DataLog[write_bank][write_ptr][3].u = 0x7F800000;      // VOFA 结束符
+                
+                write_ptr++;
+                
+                if (write_ptr >= SAMPLE_NUM) {
+                    bank_ready = write_bank;  // 标记当前 Bank 已满
+                    write_bank = !write_bank; // 切换 Bank
+                    write_ptr = 0;            // 重置指针
+                }
+            }
+        }
         // LED 翻转逻辑
         if (Timer1_Counter >= 1500) 
         { // 15kHz下，7500次是500ms
             Timer1_Counter = 0;
             LED0_TOGGLE();
-
-            VOFA_Send_UART2(debug_iq, debug_id, elec_angle, debug_Vq,debug_Vd);
 
             // 验证U，V，W线序
             // printf("IU:%.2f, IV:%.2f, IW:%.2f,elec_angle: %.2f\r\n",debug_iu, debug_iv,debug_iw,elec_angle);
@@ -257,9 +284,6 @@ void TIM1_UP_TIM16_IRQHandler(void)
             // printf("raw_u:%.2f,raw_v:%.2f,raw_w:%.2f\r\n",debug_raw_u, debug_raw_v, debug_raw_w);
 
             // printf("Ialpha:%.2f,Ibeta:%.2f\r\n",debug_Ialpha, debug_Ibeta);
-
-            // printf("IUIV:%.2f, IW:%.2f,IU_filt:%.2f, IV_filt:%.2f, IW_filt:%.2f\r\n", 
-                    // debug_iu, debug_iv,debug_iw, debug_iu_filt, debug_iv_filt, debug_iw_filt);
 
             // printf("Target:%.2f, Act:%.2f, Iq_Ref:%.2f, Iq_Act:%.2f\r\n", 
             //         target_speed, actual_speed_filt, target_iq, debug_iq);
@@ -362,7 +386,7 @@ void TIM1_PWM_Init(u16 arr)
     TIM1->CR1 |= TIM_CR1_CEN;
     
     // 12. 中断配置
-    NVIC_SetPriority(TIM1_UP_TIM16_IRQn, 0); 
+    NVIC_SetPriority(TIM1_UP_TIM16_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(), 0, 0));  // 抢占优先级 0，子优先级 0
     NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
 }
 
@@ -524,7 +548,6 @@ void FOC_SVPWM_Update(float Vd, float Vq, float angle)
     // === 8. 更新采样触发点 (CCR4) ===80
     TIM1->CCR4 = PWM_ARR - 100; 
 }
-
 
         // 2. 速度环逻辑：15分频 (运行频率 1kHz)
         // static uint16_t speed_cnt = 0;

@@ -31,8 +31,8 @@ uint16_t FOC_Align_Sensor(void)
     // 目的：先把转子拉到一个已知位置，防止初始死区
     for(int i = 0; i <= ramp_steps; i++) {
         float ramp_v = ((float)i / ramp_steps) * stage1_v;
-        TIM1->CCR1 = 0; 
-        TIM1->CCR2 = (uint16_t)(ramp_v * PWM_ARR); 
+        TIM1->CCR1 = (uint16_t)(ramp_v * PWM_ARR); 
+        TIM1->CCR2 = 0; 
         TIM1->CCR3 = 0;
         delay_ms(2);
     }
@@ -42,10 +42,10 @@ uint16_t FOC_Align_Sensor(void)
     // 目的：让磁场从 V 相线性转移到 U 相，转子会平滑滑行 120 度电角度
     for(int i = 0; i <= ramp_steps; i++) {
         float alpha = (float)i / ramp_steps;
-        // U相电压从 0% 升至 25%
-        TIM1->CCR1 = 0;
         // V相电压从 15% 降至 0%
-        TIM1->CCR2 = (uint16_t)((1.0f - alpha) * stage1_v * PWM_ARR);
+        TIM1->CCR1 = (uint16_t)((1.0f - alpha) * stage1_v * PWM_ARR);
+        TIM1->CCR2 = 0;
+        // U相电压从 0% 升至 25%
         TIM1->CCR3= (uint16_t)(alpha * max_v * PWM_ARR);
         delay_ms(2);
     }
@@ -74,7 +74,7 @@ uint16_t FOC_Align_Sensor(void)
     // --- 阶段 4: 结果应用 ---
     // manual_adjust 补偿：如果你的 Clarke 变换以 U 轴为 0 度，
     // 而电流环运行时发现输出异常，可在此微调。 
-    int16_t manual_adjust = 600; 
+    int16_t manual_adjust = 0; 
     uint16_t final_offset = (uint16_t)((zero_offset + manual_adjust) & 0x3FFF);
 
     // 结束时不要立刻断电，保持一个微弱占空比防止转子滑走，直到进入 FOC 循环
@@ -83,8 +83,8 @@ uint16_t FOC_Align_Sensor(void)
     printf("Alignment Done! Raw:%d, agj:%d, Final:%d\r\n", zero_offset,manual_adjust,final_offset);
     delay_ms(50);
     
-    // return final_offset;
-    return manual_adjust;
+    return final_offset;
+    // return manual_adjust;
 }
 
 

@@ -57,11 +57,12 @@
 #include <stdlib.h>
 #include <math.h>
 //------------------------------------------
-typedef enum { false = 0, true = 1 } bool;
+
 //-----------------------------------------
 void FOC_PreAlign(float vd_align, uint32_t duration_ms);
 void Reset_PID_Controllers(void);
 void TIM1_Force_Update_Test(u16 arr);
+void Check_DMA_Complete(void);
 //-----------------------------------------
 int16_t my_zero_offset = 0;
 //-----------------------------------------
@@ -78,6 +79,14 @@ extern volatile float Vd;
 extern volatile float Vq;
 
 extern int16_t raw_diff;
+
+extern VofaData_t DataLog[2][SAMPLE_NUM][FRAME_SIZE];
+
+extern volatile uint8_t  write_bank;    // 当前正在写入哪个缓冲 (0 或 1)
+extern volatile uint32_t write_ptr;     // 写入指针
+extern volatile uint8_t  bank_ready; // 哪一个缓冲准备好了发送 (0, 1 或 0xFF表示无)
+extern volatile uint8_t  is_dma_busy;   // DMA 发送状态
+
 //-----------------------------------------
 // --- 新增：全局控制标志位 ---
 volatile uint8_t run_foc_flag = 0; // 0: 强制输出模式, 1: PID 闭环模式
@@ -104,7 +113,9 @@ int main(void) {
     // 延时函数初始化
     delay_init(170); 
 
-    uart2_init(115200); // USART2 初始化，波特率 115200
+    uart2_init(921600); // USART2 初始化，波特率 115200
+
+    __enable_irq(); // 【必须】开启全局中断
 
     // 3. CORDIC 硬件加速器初始化 (必须在算法调用前)
     CORDIC_Init();
@@ -160,14 +171,14 @@ int main(void) {
     pid_speed.output_limit = 2.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    pid_id.kp = 10.0f;   pid_id.ki = 10.1f; 
+    pid_id.kp = 0.65f;   pid_id.ki = 0.00f; 
     pid_id.output_limit = 8.5; // 对应 SVPWM 最大电压 (1.0)
     
-    pid_iq.kp = 10.0f;   pid_iq.ki = 10.1f; 
+    pid_iq.kp = 0.3f;   pid_iq.ki = 0.00f; 
     pid_iq.output_limit = 8.5;
 
     // // --- 启动 ---
-    run_foc_flag = 1;
+    run_foc_flag = 0;
     // Vd = 1.0f; // 保持 PreAlign 函数中给的值
     // Vq = 0.0f;
 
@@ -185,17 +196,43 @@ int main(void) {
 // -------------------------- 主循环 --------------------------
     while (1) 
     {
+        // --- 1. 启动发送逻辑 ---
+        // 检查是否有 bank 准备好，且 DMA 此时没活干
+        if (bank_ready != 0xFF && is_dma_busy == 0) {
+            is_dma_busy = 1; 
+            uint8_t current_send_bank = bank_ready;
+            bank_ready = 0xFF; // 释放标志，允许 Timer 准备下一个
+
+            DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+            DMA1->IFCR = DMA_IFCR_CGIF1; // 清除之前的残留标志
+            
+            DMA1_Channel1->CMAR = (uint32_t)DataLog[current_send_bank];
+            // 关键：字节数 = 采样数 * 通道数 * 4
+            DMA1_Channel1->CNDTR = SAMPLE_NUM * FRAME_SIZE * 4; 
+            
+            DMA1_Channel1->CCR |= DMA_CCR_EN;
+            // 确保串口的 DMAT 位是开启的
+            USART2->CR3 |= USART_CR3_DMAT; 
+        }
+
+        // --- 2. 检查完成逻辑 ---
+        // 在主循环查 DMA 状态，彻底替代中断
+        // 只要 DMA 的 TCIF1 标志位置 1，说明搬运完成
+        if (is_dma_busy && (DMA1->ISR & DMA_ISR_TCIF1)) {
+            DMA1->IFCR = DMA_IFCR_CTCIF1; // 清除完成标志
+            // 这里千万不要去动 USART2->CR3，保持 DMAT 开启即可
+            is_dma_busy = 0; // 释放锁，允许下一波发送
+        }
     //-----------------------------------------------------
         led_tick++;
         if (led_tick >= 100000) // 每500ms翻转一次LED0
         {
             led_tick = 0;
+            
             // LED0_TOGGLE();      // 翻转LED0
         }
      }
 }
-
-
 
 
 

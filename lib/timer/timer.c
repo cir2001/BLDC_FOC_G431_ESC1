@@ -109,59 +109,93 @@ void TIM1_UP_TIM16_IRQHandler(void)
         Timer1_Counter++;
 
         // 1. 获取机械角度与电角度
-        uint16_t angle_raw = FOC_ReadAngle_Optimized();
-        uint16_t raw_val = angle_raw & 0x3FFF;
+        uint16_t raw_val = FOC_ReadAngle_Optimized() & 0x3FFF;
 
         // 2. 计算机械角度偏差（带环形处理）
         int32_t mech_diff = (int32_t)raw_val - (int32_t)my_zero_offset;
         if (mech_diff < 0) mech_diff += 16384;
 
-        // 3. 【核心修正】因为你逆时针转动时 raw_val 在减小
-        // 我们用总程减去当前偏差，将其反转为“增加”
+        // 方向校正：确保逆时针为增加
         mech_diff = (16384 - mech_diff) % 16384; 
 
         // 4. 计算电角度 (机械差 * 极对数 7)
         int32_t elec_diff = (mech_diff * 7) % 16384; 
-
-        // 5. 转换为 0 ~ 2*PI 弧度
-        // 此时：逆时针旋转 -> mech_diff 增加 -> elec_angle 从 0 变向 6.28
         float elec_angle = (float)elec_diff * (6.2831853f / 16384.0f);
 
-        // elec_angle -= 0.8f; 
+        // elec_angle -= 0.04f;  
 
-        debug_elec_angle = elec_angle;      
- 
-        // uint32_t timeout = 1000;
-        // while(!(ADC2->ISR & ADC_ISR_JEOS) && timeout--); 
+        debug_elec_angle = elec_angle;
 
-        // 3. 电流环逻辑 (15kHz)
+        // 机械角度弧度制 (用于速度环)
+        float current_mech_rad = (float)mech_diff * (6.2831853f / 16384.0f);
+
+        // 电流环逻辑 (15kHz)
         // 1. 计算原始偏差（ADC值 - 你的静态偏置）
-        int32_t raw_w= (int32_t)(ADC1->JDR1 & 0x0FFF) - (int32_t)offset_u;
-        int32_t raw_v = (int32_t)(ADC2->JDR1 & 0x0FFF) - (int32_t)offset_v;
-        int32_t raw_u = (int32_t)(ADC2->JDR2 & 0x0FFF) - (int32_t)offset_w;
+        int32_t raw_w= (int32_t)(ADC1->JDR1 & 0x0FFF) - (int32_t)offset_u-4;
+        int32_t raw_v = (int32_t)(ADC2->JDR1 & 0x0FFF) - (int32_t)offset_v-4;
+        int32_t raw_u = (int32_t)(ADC2->JDR2 & 0x0FFF) - (int32_t)offset_w+4;
 
         // 必须同时清除 ADC1 和 ADC2 的标志位
         ADC1->ISR |= ADC_ISR_JEOS; 
         ADC2->ISR |= ADC_ISR_JEOS;
- 
+        
         debug_raw_u = raw_u;
         debug_raw_v = raw_v;
         debug_raw_w = raw_w;
 
-        // 在采样后、Clarke 前加：
-        float sum = raw_u + raw_v + raw_w;
-        float com = sum * 0.33333333f; // sum / 3.0f
-        raw_u -= com; raw_v -= com; raw_w -= com;
-
-        // 3. 计算实际电流 (根据硬件增益调整比例系数)
+        // 零序分量补偿（消除采样偏置漂移）
         const float LSB_PER_AMP = -10.0f; 
-        float iu = (float)raw_u / LSB_PER_AMP;
-        float iv = (float)raw_v / LSB_PER_AMP;
-        float iw = (float)raw_w / LSB_PER_AMP;
+        float com = (raw_u + raw_v + raw_w) * 0.3333333f;
+        float iu = ((float)raw_u - com) / LSB_PER_AMP;
+        float iv = ((float)raw_v - com) / LSB_PER_AMP;
+        float iw = ((float)raw_w - com) / LSB_PER_AMP;
 
         debug_iu = iu;
         debug_iv = iv;
         debug_iw = iw;
+
+        // 速度环逻辑：15分频 (运行频率 1kHz)
+        static uint16_t speed_cnt = 0;
+        static float last_mech_angle = 0.0f;
+        speed_cnt++;
+        if (speed_cnt >= 15) 
+        {
+            speed_cnt = 0;
+
+            // 1. 计算角度差
+            float delta_angle = current_mech_rad - last_mech_angle;
+            
+            // 2. 环形边界处理
+            if (delta_angle >  3.1415926f) delta_angle -= 6.2831853f;
+            else if (delta_angle < -3.1415926f) delta_angle += 6.2831853f;
+
+            // 3. 计算速度 (rad/s)
+            float instant_speed = delta_angle * 1000.0f; // rad/s
+
+            // 4. 速度滤波 (0.03 较平滑，若响应太慢可改至 0.05-0.1)
+            actual_speed_filt = (instant_speed * 0.1f) + (actual_speed_filt * 0.9f);
+            
+            // 5. 更新历史位置
+            last_mech_angle = current_mech_rad;
+
+            if (run_foc_flag) 
+            {
+                // target_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
+            }
+        }
+
+        // === zero offset 0位对齐 ===
+        // elec_angle = -0.06f;    
+
+        // 动态测试，IU，Iv，Iw 验证线序，应该是正弦波，出峰先U再V然后W
+        // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
+        // if (open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
+        // if (open_loop_angle < 0.0f)       open_loop_angle += 6.2831853f; 
+
+        // 使用 CORDIC 计算 Sin/Cos
+        float st, ct;
+        CORDIC_SinCos(elec_angle, &st, &ct);
+        // CORDIC_SinCos(open_loop_angle, &st, &ct);
 
         // Clark & Park 变换
         // float i_alpha = iu;
@@ -172,13 +206,6 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_Ialpha = i_alpha;
         debug_Ibeta = i_beta;
 
-        // // === zero offset 0位对齐 ===
-        // elec_angle = 0.0f;     
-
-        // 使用 CORDIC 计算 Sin/Cos
-        float st, ct;
-        CORDIC_SinCos(elec_angle, &st, &ct);
-        // CORDIC_SinCos(open_loop_angle, &st, &ct);
         // Park 变换
         float i_d = i_alpha * ct + i_beta * st;
         float i_q = -i_alpha * st + i_beta * ct;
@@ -187,26 +214,21 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_iq = i_q;
 
         // 电流低通滤波 
-        i_d_f = (i_d * 0.05f) + (i_d_f * 0.95f);
-        i_q_f = (i_q * 0.05f) + (i_q_f * 0.95f);
+        i_d_f = (i_d * 0.02f) + (i_d_f * 0.98f);
+        i_q_f = (i_q * 0.02f) + (i_q_f * 0.98f);
 
         debug_iq_filt = i_q_f;
         debug_id_filt = i_d_f;
 
-        // --- 4. 控制模式分流 (核心修改) ---
- 
+        // --- 电流环 PID ---
         if (run_foc_flag == 1) 
         {
             // ===== PID 计算 Vd, Vq ======
-            Vd = PID_Calc(&pid_id, target_id, i_d_f);
-            float Vq_pid = PID_Calc(&pid_iq, target_iq, i_q_f);
-            
-            Vq = Vq_pid;
-            // Vd = 0.0f;
+            Vd = PID_Calc_Current(&pid_id, target_id, i_d_f);
+            Vq = PID_Calc_Current(&pid_iq, target_iq, i_q_f);
 
             // Vd = 0.0f; 
             // Vq = 0.5f;
-
             // ===== 开环旋转逻辑 判断电角度与旋转方向的正确性，调整pwm输出的相序 ========
             // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
             // if(open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
@@ -218,26 +240,20 @@ void TIM1_UP_TIM16_IRQHandler(void)
         }
         else 
         {
-            // 动态测试，IU，Iv，Iw 验证线序，应该是正弦波，出峰先U再V然后W
-            open_loop_angle += 0.0005f; // 步进值，控制旋转速度
-            if (open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
-            if (open_loop_angle < 0.0f)       open_loop_angle += 6.2831853f; 
-            CORDIC_SinCos(open_loop_angle, &st, &ct);
-            Vd = 0.0f; 
-            Vq = 0.5f;
-
+            // Vd = 0.0f; 
+            // Vq = 0.5f;
             // ======= 强制模式：预对齐 =======
-            // CORDIC_SinCos(0.0f, &st, &ct); // 对齐 0 度
-            // Vd = 0.5f; 
-            // Vq = 0.0f;
+            Vd = 0.5f; 
+            Vq = 0.0f;
         }
+
+        debug_Vq = Vq;
+        debug_Vd = Vd;
+
         //====== 逆变换与输出 ==========
         // 逆 Park 变换
         Valpha = Vd * ct - Vq * st;
         Vbeta  = Vd * st + Vq * ct;
-
-        debug_Vq = Vq;
-        debug_Vd = Vd;
 
         debug_Valpha = Valpha;
         debug_Vbeta = Vbeta;
@@ -258,9 +274,18 @@ void TIM1_UP_TIM16_IRQHandler(void)
             // 如果当前缓冲区没在发送，就记录
             if (bank_ready != write_bank) {
                 // 记录你关心的闭环数据
-                DataLog[write_bank][write_ptr][0].f = debug_iq_filt;
-                DataLog[write_bank][write_ptr][1].f = debug_id_filt;
-                DataLog[write_bank][write_ptr][2].f = debug_Vq; // 建议观察电角度
+                // DataLog[write_bank][write_ptr][0].f = debug_raw_u;
+                // DataLog[write_bank][write_ptr][1].f = debug_raw_v;
+                // DataLog[write_bank][write_ptr][2].f = debug_raw_w;
+
+                // DataLog[write_bank][write_ptr][0].f = debug_iu;
+                // DataLog[write_bank][write_ptr][1].f = debug_iv;
+                // DataLog[write_bank][write_ptr][2].f = debug_iw;
+
+                DataLog[write_bank][write_ptr][0].f = debug_iq_filt; 
+                DataLog[write_bank][write_ptr][1].f = debug_id_filt; 
+                DataLog[write_bank][write_ptr][2].f = debug_Vd; 
+
                 DataLog[write_bank][write_ptr][3].u = 0x7F800000;      // VOFA 结束符
                 
                 write_ptr++;
@@ -363,12 +388,12 @@ void TIM1_PWM_Init(u16 arr)
 
 void SVPWM_Output_Standard(float Valpha, float Vbeta)
 {
-    // 1. 平方限幅 (防止过调制)
+    // 1. 平方限幅 (SVPWM 允许模长达到 1.154)
     float v_sq = Valpha * Valpha + Vbeta * Vbeta;
-    if (v_sq > 1.0f) {
+    if (v_sq > 1.333f) { // 1.1547^2
         float inv_mod = 1.0f / sqrtf(v_sq);
-        Valpha *= inv_mod;
-        Vbeta *= inv_mod;
+        Valpha *= (inv_mod * 1.154f);
+        Vbeta  *= (inv_mod * 1.154f);
     }
 
     // 2. 反克拉克变换
@@ -384,25 +409,27 @@ void SVPWM_Output_Standard(float Valpha, float Vbeta)
     // 4. 注入零序分量 (中点平移)
     float V_offset = (max_v + min_v) * 0.5f;
 
-    // 5. 映射到 0.0 ~ 1.0 占空比并增加安全限幅
-    // 使用 0.5 缩放确保在 [-1, 1] 输入下 Ta 始终正数
-    float Ta = (U_u - V_offset) * 0.5f + 0.5f;
-    float Tb = (U_v - V_offset) * 0.5f + 0.5f;
-    float Tc = (U_w - V_offset) * 0.5f + 0.5f;
+    // 5. 映射并限幅
+    float Ta = (U_u - V_offset + 1.154f) * 0.433f; // 归一化到 0~1 的优化算法
+    float Tb = (U_v - V_offset + 1.154f) * 0.433f;
+    float Tc = (U_w - V_offset + 1.154f) * 0.433f;
 
-    if(Ta > 1.0f) Ta = 1.0f; else if(Ta < 0.0f) Ta = 0.0f;
-    if(Tb > 1.0f) Tb = 1.0f; else if(Tb < 0.0f) Tb = 0.0f;
-    if(Tc > 1.0f) Tc = 1.0f; else if(Tc < 0.0f) Tc = 0.0f;
+    // 6. 转换为计数值，并预留足够的低边导通时间用于采样 (Dead-time/Sampling Window)
+    uint16_t max_ccr = PWM_ARR - 200; 
+    uint16_t min_ccr = 200; // 必须预留最小关闭时间以保证 ADC 采样稳定
 
     // 6. 转换为计数值并预留采样窗口
     uint16_t ccr1 = (uint16_t)(Ta * PWM_ARR);
     uint16_t ccr2 = (uint16_t)(Tb * PWM_ARR);
     uint16_t ccr3 = (uint16_t)(Tc * PWM_ARR);
 
-    uint16_t max_ccr = PWM_ARR - 200; 
     if (ccr1 > max_ccr) ccr1 = max_ccr;
     if (ccr2 > max_ccr) ccr2 = max_ccr;
     if (ccr3 > max_ccr) ccr3 = max_ccr;
+
+    // if (ccr1 < min_ccr) ccr1 = min_ccr;
+    // if (ccr2 < min_ccr) ccr2 = min_ccr;
+    // if (ccr3 < min_ccr) ccr3 = min_ccr;
 
     // 7. 写入寄存器
     TIM1->CCR1 = ccr2;
@@ -413,12 +440,44 @@ void SVPWM_Output_Standard(float Valpha, float Vbeta)
     TIM1->CCR4 = (uint16_t)(PWM_ARR - 100);
 }
 
-float PID_Calc(PID_Controller* pid, float target, float current) 
+/**
+ * @brief 抗饱和电流环 PID 计算
+ */
+float PID_Calc_Current(PID_Controller* pid, float target, float current)
 {
     float error = target - current;
-    float dt = 0.000066f; 
+    float dt = 0.0000666f; // 15kHz
 
-    // 1. 计算 P 项
+    // 1. 计算比例项
+    float p_term = pid->kp * error;
+
+    // 2. 预计算输出（用于抗饱和判定）
+    float next_integral = pid->integral + (error * pid->ki * dt);
+    float total_out = p_term + next_integral;
+
+    // 3. 动态抗饱和条件：
+    // 只有当输出未饱和，或者误差方向有助于脱离饱和时，才累加积分
+    if (total_out > -pid->output_limit && total_out < pid->output_limit) {
+        pid->integral = next_integral;
+    }
+
+    // 4. 积分项独立限幅（二次保险）
+    if (pid->integral > pid->output_limit) pid->integral = pid->output_limit;
+    else if (pid->integral < -pid->output_limit) pid->integral = -pid->output_limit;
+
+    // 5. 最终输出限幅
+    float out = p_term + pid->integral;
+    if (out > pid->output_limit) out = pid->output_limit;
+    else if (out < -pid->output_limit) out = -pid->output_limit;
+
+    return out;
+}
+
+float PID_Calc_Speed(PID_Controller* pid, float target, float current) 
+{
+    float error = target - current;
+    float dt = 0.001f;  
+        // 1. 计算 P 项
     float p_term = pid->kp * error;
 
     // 2. 计算 I 项（只有在输出未饱和时才累加，或者直接限幅）
@@ -438,113 +497,7 @@ float PID_Calc(PID_Controller* pid, float target, float current)
     return out;
 }
 
-float PID_Calc_Speed(PID_Controller* pid, float target, float current) 
-{
-    float error = target - current;
-    
-    // 1. 积分累加
-    pid->integral += error; 
 
-    // 2. 积分限幅 (核心修改)
-    // 这里的限幅应该基于“你允许积分项贡献多少电流”
-    // 假设速度环输出 target_iq，最大为 2.0A，我们可以允许积分项占满整个输出
-    // float i_limit = 2.0f / (pid->ki * 0.001f); // 反推积分累加器的限幅
-    // if (pid->integral > i_limit) pid->integral = i_limit;
-    // if (pid->integral < -i_limit) pid->integral = -i_limit;
-
-    if (pid->integral > 100.0f) pid->integral = 100.0f; 
-    if (pid->integral < -100.0f) pid->integral = -100.0f;
-
-    // 3. 计算输出 (PI控制)
-    float p_out = pid->kp * error;
-    float i_out = pid->ki * pid->integral; 
-    
-    float out = p_out + i_out;
-
-    // 4. 总输出限幅 (限制 target_iq)
-    if (out > pid->output_limit) out = pid->output_limit;
-    if (out < -pid->output_limit) out = -pid->output_limit;
-    
-    return out;
-}
-
-void FOC_SVPWM_Update(float Vd, float Vq, float angle)
-{
-    // === 1. 逆 Park 变换 (将 Vd, Vq 旋转到静止坐标系 Alpha, Beta) ===
-    float s = sinf(angle);
-    float c = cosf(angle);
-    float Valpha = Vd * c - Vq * s;
-    float Vbeta  = Vd * s + Vq * c;
-
-    // === 2. 平方限幅 (防止过调制，保持你原有的逻辑) ===
-    float v_sq = Valpha * Valpha + Vbeta * Vbeta;
-    if (v_sq > 1.0f) {
-        float inv_mod = 1.0f / sqrtf(v_sq);
-        Valpha *= inv_mod;
-        Vbeta *= inv_mod;
-    }
-
-    // === 3. 反克拉克变换 (生成三相电压矢量) ===
-    float U_u = Valpha;
-    float U_v = -0.5f * Valpha - 0.8660254f * Vbeta; // -0.5, -sqrt(3)/2
-    float U_w = -0.5f * Valpha + 0.8660254f * Vbeta; // -0.5, +sqrt(3)/2
-
-    // === 4. 寻找极值并注入零序分量 (中点平移，生成马鞍波) ===
-    float max_v = U_u, min_v = U_u;
-    if (U_v > max_v) max_v = U_v; if (U_v < min_v) min_v = U_v;
-    if (U_w > max_v) max_v = U_w; if (U_w < min_v) min_v = U_w;
-
-    float V_offset = (max_v + min_v) * 0.5f;
-
-    // === 5. 映射到 0.0 ~ 1.0 占空比范围 ===
-    float Ta = (U_u - V_offset) + 0.5f;
-    float Tb = (U_v - V_offset) + 0.5f;
-    float Tc = (U_w - V_offset) + 0.5f;
-
-    // === 6. 转换为计数值并强制执行采样窗保护 (保持你的核心修改) ===
-    uint16_t ccr1 = (uint16_t)(Ta * PWM_ARR);
-    uint16_t ccr2 = (uint16_t)(Tb * PWM_ARR);
-    uint16_t ccr3 = (uint16_t)(Tc * PWM_ARR);
-
-    uint16_t max_ccr = PWM_ARR - 200; 
-    if (ccr1 > max_ccr) ccr1 = max_ccr;
-    if (ccr2 > max_ccr) ccr2 = max_ccr;
-    if (ccr3 > max_ccr) ccr3 = max_ccr;
-
-    // === 7. 写入寄存器 ===
-    TIM1->CCR1 = ccr3;
-    TIM1->CCR2 = ccr2;
-    TIM1->CCR3 = ccr1;
-
-    // === 8. 更新采样触发点 (CCR4) ===80
-    TIM1->CCR4 = PWM_ARR - 100; 
-}
-
-        // 2. 速度环逻辑：15分频 (运行频率 1kHz)
-        // static uint16_t speed_cnt = 0;
-        // speed_cnt++;
-        // if (speed_cnt >= 15) 
-        // {
-        //     speed_cnt = 0;
-            
-        //     // 计算角度差 (处理过零点)
-        //     float delta_angle = mech_angle - last_mech_angle;
-        //     if (delta_angle > 3.14159f)  delta_angle -= 6.28318f;
-        //     if (delta_angle < -3.14159f) delta_angle += 6.28318f;
-            
-        //     // 计算瞬时速度 (rad/s) -> 1kHz 频率，所以乘以 1000
-        //     float instant_speed = -(delta_angle * 1000.0f); 
-            
-        //     // 速度低通滤波 
-        //     actual_speed_filt = (instant_speed * 0.05f) + (actual_speed_filt * 0.95f);
-        //     last_mech_angle = mech_angle;
-
-        //     float base_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
-
-        //     target_iq = base_iq;
-        //     // target_iq = 0.3f;
-        //     target_id = 0.0f;
-        // }
 
 
 

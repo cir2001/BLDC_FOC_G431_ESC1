@@ -147,7 +147,6 @@ int main(void) {
     delay_ms(50);
 
     // 执行电角度校准，获取零位偏移
-    // 这个函数会强行给电机通电并对齐
     my_zero_offset = FOC_Align_Sensor();
     printf("zero_offset: %d\r\n", my_zero_offset);
     delay_ms(100);
@@ -159,39 +158,29 @@ int main(void) {
     ADC1->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
     ADC2->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
 
-    delay_ms(100);
-    // printf("Verify zero current raw: U=%lu, V=%lu, W=%lu\r\n",
-    //        ADC1->JDR1, ADC2->JDR1, ADC2->JDR2);
-    delay_ms(50);
-
     // --- 速度环 (外环) ---
-    target_speed = 10.0f;      
-    pid_speed.kp = 0.1f;      // 速度环 Kp 通常较小
-    pid_speed.ki = 0.01f; 
-    pid_speed.output_limit = 2.0f; // 限制最大电流
+    target_speed = -35.0f;      
+    pid_speed.kp = 15.0f;      // 速度环 Kp 通常较小
+    pid_speed.ki = 0.5f; 
+    pid_speed.output_limit = 8000.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    pid_id.kp = 50.0f;   pid_id.ki = 25.0f; 
-    pid_id.output_limit = 200.0f; // 对应 SVPWM 最大电压 (1.0)
+    pid_id.kp = 80.0f;   pid_id.ki = 400.0f; 
+    pid_id.output_limit = 8000.0f; // 对应 SVPWM 最大电压 
     
-    pid_iq.kp = 50.0f;   pid_iq.ki = 25.0f; 
-    pid_iq.output_limit = 200.0f; // 对应 SVPWM 最大电压
+    pid_iq.kp = 50.0f;   pid_iq.ki = 200.0f; 
+    pid_iq.output_limit = 8000.0f; // 对应 SVPWM 最大电压
 
     // // --- 启动 ---
     run_foc_flag = 1;
-    // Vd = 1.0f; // 保持 PreAlign 函数中给的值
-    // Vq = 0.0f;
 
     target_id = 0.0f;
-    target_iq = -2.0f;
+    target_iq = 1.0f;
 
     // 3. 启动控制
     TIM1->DIER |= TIM_DIER_UIE; // 开启中断，正式进入 FOC 闭环
     TIM1->BDTR |= TIM_BDTR_MOE;
     TIM1->CR1 |= TIM_CR1_CEN;    // 确保计数器在运行
-  
-    // printf("[System] FOC Loop Running. Target Iq: %.2f\r\n", target_iq);
-    // delay_ms(50);
 
 // -------------------------- 主循环 --------------------------
     while (1) 

@@ -1,4 +1,4 @@
-#include "as5047p.h"
+#include "mt6826s.h"
 //----------------------------------------------------------------
 // 使用TIM4
 // PB6------A
@@ -13,7 +13,7 @@ volatile uint32_t edge_count_B = 0;
 volatile uint32_t A_rise = 0, A_fall = 0;
 volatile uint32_t B_rise = 0, B_fall = 0;
 //===============================================================
-void AS5047P_Init(void) {
+void MT6826S_Init(void) {
     // 1. 开启时钟
     RCC->AHB2ENR  |= RCC_AHB2ENR_GPIOBEN;
     RCC->APB1ENR1 |= RCC_APB1ENR1_TIM4EN;
@@ -201,3 +201,7 @@ void Encoder_Diagnosis_Init(void) {
     EXTI->IMR1  |= (EXTI_IMR1_IM6 | EXTI_IMR1_IM7);
     NVIC_EnableIRQ(EXTI9_5_IRQn);
 }
+
+
+
+

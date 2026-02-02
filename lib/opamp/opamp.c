@@ -13,13 +13,7 @@ void OPAMP_Init_Registers(void) {
     RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
     RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN | RCC_AHB2ENR_GPIOBEN;
 
-    // // GPIO 模拟模式（先清零再设，防残留）
-    // GPIOA->MODER &= ~((3U << 2) | (3U << 14));   // PA1, PA7
-    // GPIOA->MODER |=  ((3U << 2) | (3U << 14));
-    // GPIOB->MODER &= ~((3U << 0) | (3U << 2));    // PB0, PB1
-    // GPIOB->MODER |=  ((3U << 0) | (3U << 2));
-
-    // 2. GPIO 配置为模拟模式 (Analog Mode)
+    // GPIO 配置为模拟模式 (Analog Mode)
     // Phase U (PA1), Phase V (PA7)
     GPIOA->MODER |= (3U << (1 * 2)) | (3U << (7 * 2)); 
     // Phase W (PB0)

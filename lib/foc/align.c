@@ -55,9 +55,9 @@ uint16_t FOC_Align_Sensor(void)
     delay_ms(1500); // 彻底消除机械余震
 
     // 稳定性检查
-    uint16_t check1 = FOC_ReadAngle_Optimized() & 0x3FFF;
+    uint16_t check1 = 0x3FFF;
     delay_ms(200);
-    uint16_t check2 = FOC_ReadAngle_Optimized() & 0x3FFF;
+    uint16_t check2 = 0x3FFF;
     if(abs((int)check1 - (int)check2) > 20) {
         printf("Warning: Motor unstable! Adjusting wait time...\r\n");
         delay_ms(1000);
@@ -66,7 +66,7 @@ uint16_t FOC_Align_Sensor(void)
     // 高精度采样平均 (256次)
     uint32_t sum = 0;
     for(int i = 0; i < 256; i++) {
-        sum += (FOC_ReadAngle_Optimized() & 0x3FFF);
+        sum += (0x3FFF);
         delay_ms(1);
     }
     uint16_t zero_offset = (uint16_t)(sum / 256);

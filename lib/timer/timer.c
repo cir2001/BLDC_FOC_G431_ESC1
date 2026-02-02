@@ -1,5 +1,5 @@
 #include "timer.h"
-#include "as5047p.h"
+// #include "as5047p.h"
 #include "led.h"
 #include <math.h>
 #include "align.h"
@@ -109,7 +109,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         Timer1_Counter++;
 
         // 1. 获取机械角度与电角度
-        uint16_t raw_val = FOC_ReadAngle_Optimized() & 0x3FFF;
+        uint16_t raw_val = 0x3FFF;
 
         // 2. 计算机械角度偏差（带环形处理）
         int32_t mech_diff = (int32_t)raw_val - (int32_t)my_zero_offset;
@@ -259,7 +259,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_Vbeta = Vbeta;
         
         // SVPWM 调制输出到寄存器
-        SVPWM_Output_Standard(Valpha, Vbeta);
+        // SVPWM_Output_Standard(Valpha, Vbeta);
         
         debug_speed_act = actual_speed_filt;
         debug_iq_target = target_iq;
@@ -302,6 +302,21 @@ void TIM1_UP_TIM16_IRQHandler(void)
         { // 15kHz下，7500次是500ms
             Timer1_Counter = 0;
             LED0_TOGGLE();
+
+            // uint16_t raw_pulses = TIM4->CNT;
+            // uint8_t  dir = (TIM4->CR1 & TIM_CR1_DIR) >> TIM_CR1_DIR_Pos;
+            
+            // // 2. 转换为角度
+            // float angle = ((float)raw_pulses / 4000.0f) * 360.0f;
+            
+            // // 3. (可选) 计算转速
+            // // 比较当前 raw_pulses 与上一周期的差值，并处理 4000 的溢出逻辑
+            
+            // // 4. 打印调试信息 (仅在低速调试时使用)
+            // printf("Angle: %.2f, Dir: %s\n", angle, dir ? "CCW" : "CW");
+
+            // uint16_t current_cnt = TIM4->CNT;
+            // printf("CNT: %u\n", current_cnt);
         }
     }
 }

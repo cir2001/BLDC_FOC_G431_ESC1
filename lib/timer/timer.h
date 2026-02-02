@@ -4,13 +4,6 @@
 //---------------------------------------------------------------------
 //
 //--------------------------------------------------------------------
-#define ENCODER_TIM2_PERIOD  0xFFFFFFFF		//1322
-#define ENCODER_TIM3_PERIOD  0xFFFF	//1322
-#define ENCODER_TIM4_PERIOD  0xFFFF    //1043
-#define ENCODER_TIM5_PERIOD  0xFFFF    //1043
-
-#define COUNTER_RESET 0			//0
-
 // 宏定义：基于 ARR = 5666
 #define PWM_ARR             5666.0f
 #define PWM_ARR_INT         5666

@@ -1,4 +1,4 @@
-#include "as5047p.h"
+#include "mt6826s.h"
 #include "delay.h"
 #include <math.h>
 #include "timer.h"

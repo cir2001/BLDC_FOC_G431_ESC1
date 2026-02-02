@@ -22,8 +22,13 @@
 //=================================================================
 // 函数原型
 void MT6826S_SPI_Init(void);
-void MT6826S_WriteReg(uint16_t addr, uint16_t data);
-uint16_t MT6826S_ReadReg(uint16_t addr);
+void MT6826S_WriteReg(uint16_t addr, uint8_t data);
+uint8_t MT6826S_ReadReg(uint16_t addr);
+
+uint16_t MT6826S_ReadAngle(void);
+uint8_t MT6826S_ReadStatus(void);
+
+uint8_t MT6826S_BurnEEPROM(void);
 
 #endif /* __MT6826S_SPI_H */
 

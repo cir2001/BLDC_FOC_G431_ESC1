@@ -43,12 +43,12 @@ void MT6826S_Init(void) {
     // 4. Encoder 模式：Mode 3（双边沿计数 + 方向检测）
     TIM4->SMCR &= ~TIM_SMCR_SMS_Msk;
     // TIM4->SMCR |= 0x3 << TIM_SMCR_SMS_Pos;   // SMS = 011 → Encoder mode 3
-    TIM4->SMCR |= 0x0001;   // SMS = 011 → Encoder mode 3
+    TIM4->SMCR |= 0x0003;   // SMS = 011 → Encoder mode 3
 
     // 5. 关键：启用 Index 硬件复位（TIMx_ECR）
-    // TIM4->ECR = 0;  // 先清零
-    // TIM4->ECR |= (1U << TIM_ECR_IE_Pos);          // IE = 1：启用 Index 功能
-    // // TIM4->ECR |= (0U << TIM_ECR_IPOS_Pos);           // IPOS 
+    TIM4->ECR = 0;  // 先清零
+    TIM4->ECR |= (1U << TIM_ECR_IE_Pos);          // IE = 1：启用 Index 功能
+    TIM4->ECR |= (3U << TIM_ECR_IPOS_Pos);           // IPOS 
     // TIM4->ECR &= ~TIM_ECR_IPOS_Msk;        // 确保 IPOS=00 (Index 信号为高时触发复位)
     
     // 7. 极性配置 - 改为 both edges for CH1 and CH2

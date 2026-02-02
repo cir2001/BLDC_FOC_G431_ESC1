@@ -47,7 +47,7 @@
 #include "usart.h"
 #include "timer.h"
 #include "led.h"
-#include "as5047p.h"
+#include "mt6826s.h"
 #include <stdio.h>
 #include "align.h"
 #include "button.h"
@@ -56,7 +56,7 @@
 #include "adc_foc.h"
 #include <stdlib.h>
 #include <math.h>
-#include "as5047p_spi.h"
+#include "mt6826s_spi.h"
 //------------------------------------------
 
 //-----------------------------------------
@@ -120,72 +120,49 @@ int main(void) {
     // 延时函数初始化
     delay_init(170); 
 
-    // AS5047P_SPI_Init();
-    // delay_ms(20);
+    MT6826S_SPI_Init();
+    delay_ms(20);
 
-    // // 读两次以清除上电错误标志
-    // uint16_t clear_err = AS5047P_ReadReg(0x0001); 
-    // delay_ms(10);
-    // clear_err = AS5047P_ReadReg(0x0001);
-    // delay_ms(10);
+    // 读两次以清除上电错误标志
+    uint8_t sta = MT6826S_ReadReg(0x005) & 0x07;
+    delay_ms(10);
+    uint8_t reg007 = MT6826S_ReadReg(0x007);
+    uint8_t reg008 = MT6826S_ReadReg(0x008);
+    delay_ms(10);
+    uint16_t angle =MT6826S_ReadAngle(); 
+    delay_ms(10);
 
-    // uint16_t errfl = AS5047P_ReadReg(0x0001);
-    // uint16_t settings1 = AS5047P_ReadReg(0x0018);
-    // uint16_t settings2 = AS5047P_ReadReg(0x0019);
-    // uint16_t angle = AS5047P_ReadReg(0x3FFF);  // ANGLECOM
-    
-    // uint16_t set1, set2;
-    // // 循环写入直到读回值正确
-    // do {
-    //     AS5047P_WriteReg(0x0018, 0x0021); // ABIBIN=1
-    //     AS5047P_WriteReg(0x0019, 0x0000); // ABIRES=000 (1024 PPR)
-        
-    //     delay_ms(5);
-    //     set1 = AS5047P_ReadReg(0x0018);
-    //     set2 = AS5047P_ReadReg(0x0019);
-    // } while (set1 != 0x0021 || set2 != 0x0000);
-    
-    // uint16_t diag = AS5047P_ReadReg(0x3FFC);
+    MT6826S_WriteReg(0x007, 0xFF);
+    delay_ms(5);
+    MT6826S_WriteReg(0x008, 0xFC); 
+    delay_ms(5); 
+
+    MT6826S_BurnEEPROM();
+    delay_ms(100);
+
+    uint8_t reg007_new = MT6826S_ReadReg(0x007);
+    uint8_t reg008_new = MT6826S_ReadReg(0x008);
 //=====================================================================================
     // USART2 初始化，波特率 921600
     uart2_init(115200); 
     delay_ms(100);
 
-//     printf("ERRFLG: 0x%04X\n", errfl);  // 应为 0x0000
-//     delay_ms(10);
-//     printf("SETTINGS1 (ABI config): 0x%04X\n", settings1);  // 预期 ~0x0020 或 0x0000 + bit5=1
-//     delay_ms(10);
-//     printf("SETTINGS2 (ABIRES): 0x%04X\n", settings2);  // ABIRES 在 bit7:5
-//     delay_ms(10);
-//     printf("Raw Angle: 0x%04X\n", angle & 0x3FFF);  // 应在 0~16383 间变化（转动磁铁看是否变）
-//     // printf("ABIBIN: %d, ABIRES: %d \r\n", abibin, abires);
-//     // printf("ABIBIN_def: %d, ABIRES_def: %d \r\n", abibin_def, abires_def);
-//     delay_ms(10);
+    printf("Angle: 0x%04X\n", angle); 
+    delay_ms(10);
+    printf("Status: 0x%02X\n", sta); 
+    delay_ms(10);
+    printf("before write 0x007: 0x%02X, 0x008: 0x%02X\n", reg007, reg008);
+    delay_ms(10);
+    printf("after write 0x007: 0x%02X, 0x008: 0x%02X\n", reg007_new, reg008_new);
+    delay_ms(10);
 
-//     printf("DIAAGC: 0x%04X (MAGH=%d, MAGL=%d, COF=%d)\r\n",
-//        diag, (diag>>15)&1, (diag>>14)&1, (diag>>11)&1);
-//     delay_ms(10);
-
-//     printf("0x0018 write test: 0x%04X\n", set1 & 0x3FFF); 
-//     delay_ms(10);
-//     printf("0x0019 read test: 0x%04X\n", set2 & 0x3FFF);
-//     delay_ms(10);
-//     if (clear_err == 0xFFFF) {
-//         printf("clear_err failed!\r\n");
-//     } else {
-//         printf("clear_err success: 0x%04X\r\n", clear_err);
-//     }
-
-
-//     delay_ms(100);
 //  //========================================================================   
-
     // 初始化 PC10 为高电平，支持 ABI 模式
-    // GPIO_CS_High_Init(); 
+    GPIO_CS_High_Init(); 
     // 3. CORDIC 硬件加速器初始化 (必须在算法调用前)
     CORDIC_Init();
     delay_ms(100);
-    AS5047P_Init();
+    MT6826S_Init();
     delay_ms(100);
     // Encoder_Diagnosis_Init();  
     // delay_ms(100);

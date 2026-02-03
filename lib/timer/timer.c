@@ -14,7 +14,10 @@
 #define M_PI 3.14159265358979323846f
 #endif
 #define SQRT3 0.577350269f
-#define POLE_PAIRS 7
+
+#define ENCODER_RESOLUTION 16384
+#define ENCODER_MASK       0x3FFF
+#define POLE_PAIRS         7
 //-------------------------------------------------
 // 双缓冲区
 VofaData_t DataLog[2][SAMPLE_NUM][FRAME_SIZE];
@@ -96,6 +99,9 @@ volatile float Vq = 0.0f;
 volatile float force_angle = 0.0f; // 强制输出时的电角度
 volatile float Valpha;
 volatile float Vbeta;
+
+float open_loop_init_angle = 0.0f;
+float open_loop_Vq = 1.0f;     // 给 1.0V 电压，根据你的母线电压调整
 //-----------------------------------------------
 //==============================================
 // TIM1 更新中断服务函数
@@ -108,21 +114,21 @@ void TIM1_UP_TIM16_IRQHandler(void)
         TIM1->SR &= ~TIM_SR_UIF;
         Timer1_Counter++;
 
-        // 1. 获取机械角度与电角度
-        uint16_t raw_val = 0x3FFF;
+        // 1. 获取 14 位机械角度
+        uint16_t raw_val = (uint16_t)(TIM4->CNT) & ENCODER_MASK;
 
-        // 2. 计算机械角度偏差（带环形处理）
-        int32_t mech_diff = (int32_t)raw_val - (int32_t)my_zero_offset;
-        if (mech_diff < 0) mech_diff += 16384;
+        // 2. 计算机械角度差（利用无符号数截断特性，无需 if 处理负数）
+        uint16_t mech_diff = (raw_val - (uint16_t)my_zero_offset) & ENCODER_MASK;
 
-        // 方向校正：确保逆时针为增加
-        mech_diff = (16384 - mech_diff) % 16384; 
+        // mech_diff = 16384 - mech_diff;
 
-        // 4. 计算电角度 (机械差 * 极对数 7)
-        int32_t elec_diff = (mech_diff * 7) % 16384; 
-        float elec_angle = (float)elec_diff * (6.2831853f / 16384.0f);
+        // 3. 计算电角度分量 (0 - 16383)
+        uint16_t elec_diff = (mech_diff * POLE_PAIRS) & ENCODER_MASK;
 
-        // elec_angle -= 0.04f;  
+        // 4. 转换为弧度 (0 - 2*PI)
+        float elec_angle = (float)elec_diff * 0.000383495197f; // 0.000383495197f = 2*PI / 16384
+
+        elec_angle += 1.2f; // 加上强制输出的角度偏移
 
         debug_elec_angle = elec_angle;
 
@@ -180,7 +186,8 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
             if (run_foc_flag) 
             {
-                // target_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
+                target_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
+                target_id = 0.0f;
             }
         }
 
@@ -188,7 +195,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         // elec_angle = -0.06f;    
 
         // 动态测试，IU，Iv，Iw 验证线序，应该是正弦波，出峰先U再V然后W
-        // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
+        // open_loop_angle += 0.0002f; // 步进值，控制旋转速度
         // if (open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
         // if (open_loop_angle < 0.0f)       open_loop_angle += 6.2831853f; 
 
@@ -227,8 +234,8 @@ void TIM1_UP_TIM16_IRQHandler(void)
             Vd = PID_Calc_Current(&pid_id, target_id, i_d_f);
             Vq = PID_Calc_Current(&pid_iq, target_iq, i_q_f);
 
-            // Vd = 0.0f; 
-            // Vq = 0.5f;
+            Vd = Vd*0.5f;
+            Vq = Vq*0.5f;
             // ===== 开环旋转逻辑 判断电角度与旋转方向的正确性，调整pwm输出的相序 ========
             // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
             // if(open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
@@ -236,15 +243,15 @@ void TIM1_UP_TIM16_IRQHandler(void)
             // // 开环验证模式下，强制使用开环角度计算 Sin/Cos
             // CORDIC_SinCos(open_loop_angle, &st, &ct);
             // Vd = 0.0f;
-            // Vq = 0.8f;       
+            // Vq = 0.6f;       
         }
         else 
         {
-            // Vd = 0.0f; 
-            // Vq = 0.5f;
+            Vd = 0.0f; 
+            Vq = 0.5f;
             // ======= 强制模式：预对齐 =======
-            Vd = 0.5f; 
-            Vq = 0.0f;
+            // Vd = 0.8f*0.5f; 
+            // Vq = 0.0f*0.5f;
         }
 
         debug_Vq = Vq;
@@ -259,7 +266,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_Vbeta = Vbeta;
         
         // SVPWM 调制输出到寄存器
-        // SVPWM_Output_Standard(Valpha, Vbeta);
+        SVPWM_Output_Standard(Valpha, Vbeta);
         
         debug_speed_act = actual_speed_filt;
         debug_iq_target = target_iq;
@@ -284,7 +291,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
                 DataLog[write_bank][write_ptr][0].f = debug_iq_filt; 
                 DataLog[write_bank][write_ptr][1].f = debug_id_filt; 
-                DataLog[write_bank][write_ptr][2].f = debug_Vd; 
+                DataLog[write_bank][write_ptr][2].f = debug_Vq; 
 
                 DataLog[write_bank][write_ptr][3].u = 0x7F800000;      // VOFA 结束符
                 
@@ -302,21 +309,9 @@ void TIM1_UP_TIM16_IRQHandler(void)
         { // 15kHz下，7500次是500ms
             Timer1_Counter = 0;
             LED0_TOGGLE();
-
-            // uint16_t raw_pulses = TIM4->CNT;
-            // uint8_t  dir = (TIM4->CR1 & TIM_CR1_DIR) >> TIM_CR1_DIR_Pos;
-            
-            // // 2. 转换为角度
-            // float angle = ((float)raw_pulses / 4000.0f) * 360.0f;
-            
-            // // 3. (可选) 计算转速
-            // // 比较当前 raw_pulses 与上一周期的差值，并处理 4000 的溢出逻辑
-            
-            // // 4. 打印调试信息 (仅在低速调试时使用)
-            // printf("Angle: %.2f, Dir: %s\n", angle, dir ? "CCW" : "CW");
-
-            // uint16_t current_cnt = TIM4->CNT;
-            // printf("CNT: %u\n", current_cnt);
+            // printf("elec_angle:%.2f\r\n", elec_angle);
+            // printf("CNT:%d|mech_diff:%d\r\n", TIM4->CNT,mech_diff);
+            printf("Target:%.2f, Act:%.2f\r\n",target_speed, actual_speed_filt);
         }
     }
 }
@@ -512,7 +507,17 @@ float PID_Calc_Speed(PID_Controller* pid, float target, float current)
     return out;
 }
 
+void Motor_OpenLoop_Tick(void) {
+    // 1. 累加角度
+    open_loop_init_angle += 0.05f; // 步进值，控制旋转速度
+    if (open_loop_init_angle > 6.283185f) open_loop_init_angle -= 6.283185f;
 
+    // 2. 简单的反 Park / Space Vector (这里演示最简单的 Sine PWM)
+    float Ua = -open_loop_Vq * sinf(open_loop_init_angle);
+    float Ub =  open_loop_Vq * cosf(open_loop_init_angle);
+    
+    SVPWM_Output_Standard(Ua, Ub); 
+}
 
 
 

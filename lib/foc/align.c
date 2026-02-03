@@ -3,21 +3,16 @@
 #include <math.h>
 #include "timer.h"
 #include <stdio.h>
-
-#define ALIGN_VOLTAGE_LIMIT 1000 // 限制对齐时的电压占空比，防止烧电机
-
+//-----------------------------------------------------
+// --- 宏定义与常量 ---
 #define POLE_PAIRS 7
 #ifndef M_PI
 #define M_PI 3.1415926535f
 #endif
-
+//-----------------------------------------------------
 /**
  * @brief 电角度对齐寻零
  * @return zero_offset: 机械零位偏移量 (0-16383)
- */
-/**
- * @brief 强力平滑对齐传感器
- * @return uint16_t 稳定的机械零位偏移量
  */
 uint16_t FOC_Align_Sensor(void) 
 {
@@ -55,9 +50,9 @@ uint16_t FOC_Align_Sensor(void)
     delay_ms(1500); // 彻底消除机械余震
 
     // 稳定性检查
-    uint16_t check1 = 0x3FFF;
+    uint16_t check1 = TIM4->CNT;
     delay_ms(200);
-    uint16_t check2 = 0x3FFF;
+    uint16_t check2 = TIM4->CNT;
     if(abs((int)check1 - (int)check2) > 20) {
         printf("Warning: Motor unstable! Adjusting wait time...\r\n");
         delay_ms(1000);
@@ -66,7 +61,7 @@ uint16_t FOC_Align_Sensor(void)
     // 高精度采样平均 (256次)
     uint32_t sum = 0;
     for(int i = 0; i < 256; i++) {
-        sum += (0x3FFF);
+        sum += TIM4->CNT;
         delay_ms(1);
     }
     uint16_t zero_offset = (uint16_t)(sum / 256);
@@ -74,7 +69,7 @@ uint16_t FOC_Align_Sensor(void)
     // --- 阶段 4: 结果应用 ---
     // manual_adjust 补偿：如果你的 Clarke 变换以 U 轴为 0 度，
     // 而电流环运行时发现输出异常，可在此微调。 485
-    int16_t manual_adjust = -580;//86; 
+    int16_t manual_adjust =-10;//60; 
     uint16_t final_offset = (uint16_t)((zero_offset + manual_adjust) & 0x3FFF);
 
     // 结束时不要立刻断电，保持一个微弱占空比防止转子滑走，直到进入 FOC 循环
@@ -84,7 +79,6 @@ uint16_t FOC_Align_Sensor(void)
     delay_ms(50);
     
     return final_offset;
-    // return manual_adjust;
 }
 
 

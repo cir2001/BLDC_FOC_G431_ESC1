@@ -39,11 +39,6 @@ void MT6826S_SPI_Init(void) {
     GPIOB->OTYPER  &= ~(GPIO_OTYPER_OT3);
     GPIOB->OSPEEDR |=  (GPIO_OSPEEDR_OSPEED3_1 | GPIO_OSPEEDR_OSPEED3_0);
 
-    // // 4. 配置 MOSI (PA10 输出推挽高速)
-    // GPIOA->MODER   &= ~(GPIO_MODER_MODE10_Msk);
-    // GPIOA->MODER   |=  (GPIO_MODER_MODE10_0);
-    // GPIOA->OTYPER  &= ~(GPIO_OTYPER_OT10);
-    // GPIOA->OSPEEDR |=  (GPIO_OSPEEDR_OSPEED10_1 | GPIO_OSPEEDR_OSPEED10_0);
     
     // 5. 配置 MISO (PA15 输入 + 上拉)
     GPIOA->MODER   &= ~(GPIO_MODER_MODE15_Msk);               // 输入模式 (00)

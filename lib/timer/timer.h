@@ -29,6 +29,7 @@ void TIM1_PWM_Init(u16 arr);
 void SVPWM_Output_Standard(float Valpha, float Vbeta);
 float PID_Calc_Current(PID_Controller* pid, float target, float current);
 float PID_Calc_Speed(PID_Controller* pid, float target, float current);
+void Motor_OpenLoop_Tick(void);
 
 
 #endif

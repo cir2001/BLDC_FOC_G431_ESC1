@@ -15,9 +15,6 @@
 #define AS_MOSI_H   (GPIOB->BSRR = GPIO_BSRR_BS3)
 #define AS_MOSI_L   (GPIOB->BSRR = GPIO_BSRR_BR3)
 
-// #define AS_MOSI_H   (GPIOA->BSRR = GPIO_BSRR_BS10)
-// #define AS_MOSI_L   (GPIOA->BSRR = GPIO_BSRR_BR10)
-
 #define AS_MISO_IN  (GPIOA->IDR & GPIO_IDR_ID15)
 //=================================================================
 // 函数原型

@@ -106,11 +106,7 @@ volatile float debug_iw = 0;
 
 extern float elec_angle;
 
-extern volatile uint32_t edge_count_A;
-extern volatile uint32_t edge_count_B;
-
-extern volatile uint32_t A_rise, A_fall;
-extern volatile uint32_t B_rise, B_fall;
+extern volatile uint8_t g_index_found;
 //================================================================================
 int main(void) {
     SCB->CPACR |= ((3UL << 10*2) | (3UL << 11*2));
@@ -123,112 +119,105 @@ int main(void) {
     MT6826S_SPI_Init();
     delay_ms(20);
 
-    // 读两次以清除上电错误标志
-    uint8_t sta = MT6826S_ReadReg(0x005) & 0x07;
-    delay_ms(10);
     uint8_t reg007 = MT6826S_ReadReg(0x007);
     uint8_t reg008 = MT6826S_ReadReg(0x008);
     delay_ms(10);
-    uint16_t angle =MT6826S_ReadAngle(); 
+
+    uint8_t reg0A = MT6826S_ReadReg(0x00A);
+    reg0A &= 0xF0; // 保留高 4 位 (ZERO_POS)
+    reg0A |= 0x08; // 设置 Z_PUL_WID = 0x3 (对应 8 LSBs 宽度) [cite: 15, 31]
+    MT6826S_WriteReg(0x00A, reg0A);
     delay_ms(10);
-
-    MT6826S_WriteReg(0x007, 0xFF);
-    delay_ms(5);
-    MT6826S_WriteReg(0x008, 0xFC); 
-    delay_ms(5); 
-
-    MT6826S_BurnEEPROM();
-    delay_ms(100);
-
-    uint8_t reg007_new = MT6826S_ReadReg(0x007);
-    uint8_t reg008_new = MT6826S_ReadReg(0x008);
+    uint8_t reg0A1 = MT6826S_ReadReg(0x00A);
 //=====================================================================================
     // USART2 初始化，波特率 921600
-    uart2_init(115200); 
+    uart2_init(921600); 
     delay_ms(100);
 
-    printf("Angle: 0x%04X\n", angle); 
+    printf("MT6826 0x007: 0x%02X, 0x008: 0x%02X\n", reg007, reg008);
     delay_ms(10);
-    printf("Status: 0x%02X\n", sta); 
+    printf("MT6826 0x00A: 0x%02X\n", reg0A1);
     delay_ms(10);
-    printf("before write 0x007: 0x%02X, 0x008: 0x%02X\n", reg007, reg008);
-    delay_ms(10);
-    printf("after write 0x007: 0x%02X, 0x008: 0x%02X\n", reg007_new, reg008_new);
-    delay_ms(10);
-
-//  //========================================================================   
+//========================================================================   
     // 初始化 PC10 为高电平，支持 ABI 模式
     GPIO_CS_High_Init(); 
+    LED_Init(); // 初始化LED
+    // Button_Init(); // 初始化按键
     // 3. CORDIC 硬件加速器初始化 (必须在算法调用前)
     CORDIC_Init();
     delay_ms(100);
     MT6826S_Init();
     delay_ms(100);
-    // Encoder_Diagnosis_Init();  
-    // delay_ms(100);
-    // GPIO_CS_High_Init(); 
         
-    // LED_Init(); // 初始化LED
-    // Button_Init(); // 初始化按键
+     // 2. 驱动层初始化
+    TIM1_PWM_Init(5666);     // PWM 频率设置
+    printf("TIM1_PWM_Init Done...\r\n");
+    delay_ms(50);
+    //确保 FOC 中断 (TIM1) 暂时关闭，或者处于开环模式
+    TIM1->DIER &= ~TIM_DIER_UIE;
+    while (!g_index_found) {
+        Motor_OpenLoop_Tick(); // 先运行一次，避免第一次中断时长时间等待
+        delay_ms(5);        // 等待寻零完成
+        printf("CNT:%d\r\n", TIM4->CNT);
+    }
+    
+    delay_ms(50);
 
-    // 2. 驱动层初始化
-    // TIM1_PWM_Init(5666);     // PWM 频率设置
-    // printf("TIM1_PWM_Init Done...\r\n");
-    // delay_ms(50);
-    // OPAMP_Init_Registers(); 
-    // printf("OPAMP Initialized.\r\n");
-    // delay_ms(50); 
 
-    // ADC_Init_Registers();   
-    // printf("ADC Initialized.\r\n");
-    // delay_ms(50);
+    OPAMP_Init_Registers(); 
+    printf("OPAMP Initialized.\r\n");
+    delay_ms(50); 
 
-    // // 电流零位校准 (零电流偏置)
-    // Calibrate_Current_Offset();
-    // printf("Current offset calibration complete.\r\n");
-    // delay_ms(50);
+    ADC_Init_Registers();   
+    printf("ADC Initialized.\r\n");
+    delay_ms(50);
 
-    // // 执行电角度校准，获取零位偏移
-    // my_zero_offset = FOC_Align_Sensor();
-    // printf("zero_offset: %d\r\n", my_zero_offset);
-    // delay_ms(100);
+    // 电流零位校准 (零电流偏置)
+    Calibrate_Current_Offset();
+    printf("Current offset calibration complete.\r\n");
+    delay_ms(50);
 
-    // // 标定后立即验证一次零电流值（调试用）
-    // ADC1->CR |= ADC_CR_JADSTART;
-    // ADC2->CR |= ADC_CR_JADSTART;
-    // while (!(ADC1->ISR & ADC_ISR_JEOC) && !(ADC2->ISR & ADC_ISR_JEOC));
-    // ADC1->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
-    // ADC2->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
+    // 执行电角度校准，获取零位偏移
+    my_zero_offset = FOC_Align_Sensor();
+    printf("zero_offset: %d\r\n", my_zero_offset);
+    delay_ms(100);
+
+    // 标定后立即验证一次零电流值（调试用）
+    ADC1->CR |= ADC_CR_JADSTART;
+    ADC2->CR |= ADC_CR_JADSTART;
+    while (!(ADC1->ISR & ADC_ISR_JEOC) && !(ADC2->ISR & ADC_ISR_JEOC));
+    ADC1->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
+    ADC2->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
 
     // --- 速度环 (外环) ---
-    target_speed = -35.0f;      
-    pid_speed.kp = 15.0f;      // 速度环 Kp 通常较小
-    pid_speed.ki = 0.5f; 
+    target_speed = 5.0f;      
+    pid_speed.kp = 1.2f;      // 速度环 Kp 通常较小
+    pid_speed.ki = 2.0f; 
     pid_speed.output_limit = 8000.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    pid_id.kp = 80.0f;   pid_id.ki = 400.0f; 
-    pid_id.output_limit = 8000.0f; // 对应 SVPWM 最大电压 
+    pid_id.kp = 10.0f;   pid_id.ki = 80.0f; 
+    pid_id.output_limit = 16000.0f; // 对应 SVPWM 最大电压 
     
-    pid_iq.kp = 50.0f;   pid_iq.ki = 200.0f; 
-    pid_iq.output_limit = 8000.0f; // 对应 SVPWM 最大电压
+    pid_iq.kp = 10.0f;   pid_iq.ki = 80.0f; 
+    pid_iq.output_limit = 16000.0f; // 对应 SVPWM 最大电压
 
     // // --- 启动 ---
     run_foc_flag = 1;
 
     target_id = 0.0f;
-    target_iq = 1.0f;
+    target_iq = 0.8f;
 
     // 3. 启动控制
-    // TIM1->DIER |= TIM_DIER_UIE; // 开启中断，正式进入 FOC 闭环
-    // // TIM1->BDTR |= TIM_BDTR_MOE;
-    // TIM1->CR1 |= TIM_CR1_CEN;    // 确保计数器在运行
+    TIM1->DIER |= TIM_DIER_UIE; // 开启中断，正式进入 FOC 闭环
+    TIM1->BDTR |= TIM_BDTR_MOE;
+    TIM1->CR1 |= TIM_CR1_CEN;    // 确保计数器在运行
 
 // -------------------------- 主循环 --------------------------
     while (1) 
     {
-        // // --- 1. 启动发送逻辑 ---
-        // // 检查是否有 bank 准备好，且 DMA 此时没活干
+        // --- 1. 启动发送逻辑 ---
+        // 检查是否有 bank 准备好，且 DMA 此时没活干
         // if (bank_ready != 0xFF && is_dma_busy == 0) {
         //     is_dma_busy = 1; 
         //     uint8_t current_send_bank = bank_ready;
@@ -255,29 +244,19 @@ int main(void) {
         //     is_dma_busy = 0; // 释放锁，允许下一波发送
         // }
  //============================================================================  
-        uint32_t cnt = TIM4->CNT;
-        // 读取 PB6 (A) 和 PB7 (B) 的实时电平
-        uint8_t a_level = (GPIOB->IDR & (1 << 6)) >> 6;
-        uint8_t b_level = (GPIOB->IDR & (1 << 7)) >> 7;
+        // uint32_t cnt = TIM4->CNT;
+        // // 读取 PB6 (A) 和 PB7 (B) 的实时电平
+        // uint8_t a_level = (GPIOB->IDR & (1 << 6)) >> 6;
+        // uint8_t b_level = (GPIOB->IDR & (1 << 7)) >> 7;
      
-        printf("CNT:%d | A:%d B:%d\r\n", cnt, a_level, b_level);
-        // printf("CNT:%d | A:%d B:%d\r\n", cnt, edge_count_A, edge_count_B);
-    //     uint32_t total_edges = A_rise + A_fall + B_rise + B_fall;
-    // printf("CNT:%d | A(R:%d, F:%d) B(R:%d, F:%d) | Total_Edges:%d\r\n", 
-    //        cnt, A_rise, A_fall, B_rise, B_fall, total_edges);
-        delay_ms(100);
+        // printf("CNT:%d | A:%d B:%d Z:%d\r\n", cnt, a_level, b_level);
+        // delay_ms(100);
     //-----------------------------------------------------
         led_tick++;
         if (led_tick >= 100000) // 每500ms翻转一次LED0
         {
             led_tick = 0;
-            
             // LED0_TOGGLE();      // 翻转LED0
-//             printf("TIM4 Registers Check:\r\n");
-// printf("SMCR: 0x%04X (Should be 0x0003)\r\n", (uint16_t)TIM4->SMCR);
-// printf("CCER: 0x%04X (Should be 0x0011 or 0x0111)\r\n", (uint16_t)TIM4->CCER);
-// printf("CCMR1: 0x%04X (Check bits 3:2 and 11:10 for PSC)\r\n", (uint16_t)TIM4->CCMR1);
-// printf("PSC: %d (Must be 0)\r\n", (uint16_t)TIM4->PSC);
         }
      }
 }

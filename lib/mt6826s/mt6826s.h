@@ -9,8 +9,6 @@
 void MT6826S_Init(void);
 
 void GPIO_CS_High_Init(void);
-void Encoder_Diagnosis_EXTI_Init(void);
-void Encoder_Diagnosis_Init(void);
 
 
 #endif /* __MT6826S_H */

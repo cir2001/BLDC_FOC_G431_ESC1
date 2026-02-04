@@ -164,6 +164,10 @@ int main(void) {
     delay_ms(50);
 
 
+    Detect_Motor_Pole_Pairs();
+    delay_ms(50);
+    
+
     OPAMP_Init_Registers(); 
     printf("OPAMP Initialized.\r\n");
     delay_ms(50); 

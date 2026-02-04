@@ -16,7 +16,6 @@
 #define SQRT3 0.577350269f
 
 #define ENCODER_RESOLUTION 16384
-#define ENCODER_MASK       0x3FFF
 #define POLE_PAIRS         7
 //-------------------------------------------------
 // 双缓冲区
@@ -311,7 +310,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
             LED0_TOGGLE();
             // printf("elec_angle:%.2f\r\n", elec_angle);
             // printf("CNT:%d|mech_diff:%d\r\n", TIM4->CNT,mech_diff);
-            printf("Target:%.2f, Act:%.2f\r\n",target_speed, actual_speed_filt);
+            // printf("Target:%.2f, Act:%.2f\r\n",target_speed, actual_speed_filt);
         }
     }
 }
@@ -509,7 +508,7 @@ float PID_Calc_Speed(PID_Controller* pid, float target, float current)
 
 void Motor_OpenLoop_Tick(void) {
     // 1. 累加角度
-    open_loop_init_angle += 0.05f; // 步进值，控制旋转速度
+    open_loop_init_angle += 0.01f; // 步进值，控制旋转速度
     if (open_loop_init_angle > 6.283185f) open_loop_init_angle -= 6.283185f;
 
     // 2. 简单的反 Park / Space Vector (这里演示最简单的 Sine PWM)

@@ -7,6 +7,7 @@
 // 宏定义：基于 ARR = 5666
 #define PWM_ARR             5666.0f
 #define PWM_ARR_INT         5666
+#define ENCODER_MASK       0x3FFF
 //---------------------------------------------
 typedef struct {
     float kp;

@@ -26,65 +26,70 @@ uint16_t FOC_Align_Sensor(void)
 {
     printf("Starting Smooth Two-Stage Alignment...\r\n");
 
-    float max_v = 0.25f;       // 最终对齐电压占空比 (25%)
+    float max_v = 1.0f;       // 最终对齐电压占空比 (25%)
     float stage1_v = 0.15f;    // 阶段1预定位电压 (15%)
-    int ramp_steps = 500;      // 斜坡步数
+    int ramp_steps = 1000;     // 增加步数，让滑动更丝滑
 
-    // --- 阶段 1: 预定位到 Phase V (0% -> 15%) ---
-    // 目的：先把转子拉到一个已知位置，防止初始死区
+    // 确保主输出开启
+    TIM1->BDTR |= TIM_BDTR_MOE;
+
+    // --- 阶段 1: 电流爬坡 (确保转子先锁定在 V 相轴线，即 120 度) ---
+    // 电角度 120 度 (2.0944rad) 对应 V 相
+    float start_angle = 2.094395f; 
+    // printf("Stage 1: Locking to Phase V...\r\n");
+    
     for(int i = 0; i <= ramp_steps; i++) {
-        float ramp_v = ((float)i / ramp_steps) * stage1_v;
-        TIM1->CCR1 = (uint16_t)(ramp_v * PWM_ARR); 
-        TIM1->CCR2 = 0; 
-        TIM1->CCR3 = 0;
+        float ramp_v = ((float)i / ramp_steps) * max_v;
+        
+        // 使用你的 SVPWM 函数：Vd=ramp_v, Vq=0, angle=120deg
+        float s, c;
+        // 注意：这里由于是初始化，建议用 sinf/cosf 避开 CORDIC 潜在风险
+        s = sinf(start_angle);
+        c = cosf(start_angle);
+        SVPWM_Output_Standard(ramp_v * c, ramp_v * s);
+        
         delay_ms(2);
     }
-    delay_ms(500); // 短暂稳定
+    delay_ms(500); // 锁定后静止 0.5s
 
-    // --- 阶段 2: 平滑切换 (Phase V -> Phase U) ---
-    // 目的：让磁场从 V 相线性转移到 U 相，转子会平滑滑行 120 度电角度
+    // --- 阶段 2: 矢量平滑旋转 (120度 -> 0度) ---
+    // 目的：拖动转子平滑移动到 U 相轴线 (0度)
+    // printf("Stage 2: Rotating Vector to Phase U...\r\n");
     for(int i = 0; i <= ramp_steps; i++) {
         float alpha = (float)i / ramp_steps;
-        // V相电压从 15% 降至 0%
-        TIM1->CCR1 = (uint16_t)((1.0f - alpha) * stage1_v * PWM_ARR);
-        TIM1->CCR2 = 0;
-        // U相电压从 0% 升至 25%
-        TIM1->CCR3= (uint16_t)(alpha * max_v * PWM_ARR);
+        float current_angle = start_angle * (1.0f - alpha); // 从 120 降到 0
+        
+        float s = sinf(current_angle);
+        float c = cosf(current_angle);
+        SVPWM_Output_Standard(max_v * c, max_v * s);
+        
         delay_ms(2);
     }
 
     // --- 阶段 3: 最终静止与采样 ---
-    printf("Waiting for stabilization...\r\n");
+    // printf("Waiting for stabilization...\r\n");
     delay_ms(1500); // 彻底消除机械余震
 
-    // 稳定性检查
-    uint16_t check1 = TIM4->CNT;
-    delay_ms(200);
-    uint16_t check2 = TIM4->CNT;
-    if(abs((int)check1 - (int)check2) > 20) {
-        printf("Warning: Motor unstable! Adjusting wait time...\r\n");
-        delay_ms(1000);
-    }
-
+    printf("Sampling zero offset...\r\n");
     // 高精度采样平均 (256次)
     uint32_t sum = 0;
-    for(int i = 0; i < 256; i++) {
-        sum += TIM4->CNT;
+    for(int i = 0; i < 512; i++) {
+        sum += (TIM4->CNT & ENCODER_MASK);
         delay_ms(1);
     }
-    uint16_t zero_offset = (uint16_t)(sum / 256);
+    uint16_t zero_offset = (uint16_t)(sum / 512);
 
     // --- 阶段 4: 结果应用 ---
     // manual_adjust 补偿：如果你的 Clarke 变换以 U 轴为 0 度，
     // 而电流环运行时发现输出异常，可在此微调。 485
-    int16_t manual_adjust =-10;//60; 
-    uint16_t final_offset = (uint16_t)((zero_offset + manual_adjust) & 0x3FFF);
+    int16_t manual_adjust = 0;//60; 
+    uint16_t final_offset = (uint16_t)((zero_offset + manual_adjust) & ENCODER_MASK);
 
-    // 结束时不要立刻断电，保持一个微弱占空比防止转子滑走，直到进入 FOC 循环
-    TIM1->CCR3 = (uint16_t)(0.1f * PWM_ARR); 
+    // 保持轻微电压防止滑走，直到 main 函数开启中断
+    SVPWM_Output_Standard(0.3f, 0);
 
-    printf("Alignment Done! Raw:%d, agj:%d, Final:%d\r\n", zero_offset,manual_adjust,final_offset);
-    delay_ms(50);
+    printf("Raw Offset: %d, Final: %d\r\n", zero_offset, final_offset);
+    delay_ms(10);
     
     return final_offset;
 }

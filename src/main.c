@@ -70,11 +70,13 @@ int16_t my_zero_offset = 0;
 PID_Controller pid_id;
 PID_Controller pid_iq;
 PID_Controller pid_speed;
+PID_Controller pid_pos;
 
 extern float target_speed;
 extern float actual_speed_filt;
 extern float target_iq;
 extern float target_id;  
+extern float target_pos;
 
 extern volatile float Vd;
 extern volatile float Vq;
@@ -116,28 +118,36 @@ int main(void) {
     // 延时函数初始化
     delay_init(170); 
 
-    MT6826S_SPI_Init();
-    delay_ms(20);
+    // MT6826S_SPI_Init();
+    // delay_ms(20);
 
-    uint8_t reg007 = MT6826S_ReadReg(0x007);
-    uint8_t reg008 = MT6826S_ReadReg(0x008);
-    delay_ms(10);
+    // uint8_t reg007 = MT6826S_ReadReg(0x007);
+    // uint8_t reg008 = MT6826S_ReadReg(0x008);
+    // delay_ms(10);
 
-    uint8_t reg0A = MT6826S_ReadReg(0x00A);
-    reg0A &= 0xF0; // 保留高 4 位 (ZERO_POS)
-    reg0A |= 0x08; // 设置 Z_PUL_WID = 0x3 (对应 8 LSBs 宽度) [cite: 15, 31]
-    MT6826S_WriteReg(0x00A, reg0A);
-    delay_ms(10);
-    uint8_t reg0A1 = MT6826S_ReadReg(0x00A);
+    // MT6826S_WriteReg(0x007, 0xFF);
+    // delay_ms(5);
+    // MT6826S_WriteReg(0x008, 0xFC); 
+    // delay_ms(5); 
+
+    // uint8_t reg0A = MT6826S_ReadReg(0x00A);
+    // reg0A &= 0xF0; // 保留高 4 位 (ZERO_POS)
+    // reg0A |= 0x08; // 设置 Z_PUL_WID = 0x3 (对应 8 LSBs 宽度) [cite: 15, 31]
+    // MT6826S_WriteReg(0x00A, reg0A);
+    // delay_ms(10);
+    // uint8_t reg0A1 = MT6826S_ReadReg(0x00A);
+
+    // MT6826S_BurnEEPROM();
+    // delay_ms(100);
 //=====================================================================================
     // USART2 初始化，波特率 921600
     uart2_init(921600); 
     delay_ms(100);
 
-    printf("MT6826 0x007: 0x%02X, 0x008: 0x%02X\n", reg007, reg008);
-    delay_ms(10);
-    printf("MT6826 0x00A: 0x%02X\n", reg0A1);
-    delay_ms(10);
+    // printf("MT6826 0x007: 0x%02X, 0x008: 0x%02X\n", reg007, reg008);
+    // delay_ms(10);
+    // printf("MT6826 0x00A: 0x%02X\n", reg0A1);
+    // delay_ms(10);
 //========================================================================   
     // 初始化 PC10 为高电平，支持 ABI 模式
     GPIO_CS_High_Init(); 
@@ -147,44 +157,42 @@ int main(void) {
     CORDIC_Init();
     delay_ms(100);
     MT6826S_Init();
+    printf("Encoder Init Done.\r\n");
     delay_ms(100);
+
+    OPAMP_Init_Registers(); 
+    delay_ms(100);
+    ADC_Init_Registers();
+    delay_ms(100);
+    printf("Analog & Sensor Init Done.\r\n");
+    delay_ms(10);
+
+    TIM1_PWM_Init(5666); 
+    TIM1->DIER &= ~TIM_DIER_UIE; // 确保 FOC 中断是关着的，防止它干扰校准
+    printf("TIM1 Hardware Ready.\r\n");
+    delay_ms(10);
+
+    // 电流零位校准 (零电流偏置)
+    Calibrate_Current_Offset(); 
+    printf("Current Offset Calibrated (Static).\r\n");
+    delay_ms(10);
         
-     // 2. 驱动层初始化
-    TIM1_PWM_Init(5666);     // PWM 频率设置
-    printf("TIM1_PWM_Init Done...\r\n");
-    delay_ms(50);
-    //确保 FOC 中断 (TIM1) 暂时关闭，或者处于开环模式
-    TIM1->DIER &= ~TIM_DIER_UIE;
+    // 寻找 Index (机械位置同步)
+    TIM1->BDTR |= TIM_BDTR_MOE;
     while (!g_index_found) {
         Motor_OpenLoop_Tick(); // 先运行一次，避免第一次中断时长时间等待
         delay_ms(5);        // 等待寻零完成
-        printf("CNT:%d\r\n", TIM4->CNT);
+        // printf("CNT:%d\r\n", TIM4->CNT);
     }
-    
+    printf("Index Found.\r\n");
     delay_ms(50);
 
-
-    Detect_Motor_Pole_Pairs();
-    delay_ms(50);
-    
-
-    OPAMP_Init_Registers(); 
-    printf("OPAMP Initialized.\r\n");
-    delay_ms(50); 
-
-    ADC_Init_Registers();   
-    printf("ADC Initialized.\r\n");
-    delay_ms(50);
-
-    // 电流零位校准 (零电流偏置)
-    Calibrate_Current_Offset();
-    printf("Current offset calibration complete.\r\n");
-    delay_ms(50);
+    // 极对数测试
+    // Detect_Motor_Pole_Pairs();
+    // delay_ms(50);
 
     // 执行电角度校准，获取零位偏移
     my_zero_offset = FOC_Align_Sensor();
-    printf("zero_offset: %d\r\n", my_zero_offset);
-    delay_ms(100);
 
     // 标定后立即验证一次零电流值（调试用）
     ADC1->CR |= ADC_CR_JADSTART;
@@ -193,26 +201,34 @@ int main(void) {
     ADC1->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
     ADC2->ISR |= ADC_ISR_JEOC | ADC_ISR_JEOS;
 
+    //--- PID 参数初始化 ---
+    //--- 位置环 (最外环) ---
+    target_pos = 6.28f; // 让电机转到 1 圈的位置
+    pid_pos.kp = 12.0f;
+    pid_pos.ki = 0.0f;
+    pid_pos.output_limit = 20.0f; // 限制最大速度环输出 (rad/s)
+
     // --- 速度环 (外环) ---
-    target_speed = 5.0f;      
-    pid_speed.kp = 1.2f;      // 速度环 Kp 通常较小
-    pid_speed.ki = 2.0f; 
-    pid_speed.output_limit = 8000.0f; // 限制最大电流
+    target_speed = 15.0f;      
+    pid_speed.kp = 1.4f;      // 速度环 Kp 通常较小
+    pid_speed.ki = 0.01f; 
+    pid_speed.output_limit = 800.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    pid_id.kp = 10.0f;   pid_id.ki = 80.0f; 
+    pid_id.kp = 5.0f;   pid_id.ki = 50.0f; 
     pid_id.output_limit = 16000.0f; // 对应 SVPWM 最大电压 
     
-    pid_iq.kp = 10.0f;   pid_iq.ki = 80.0f; 
+    pid_iq.kp = 5.0f;   pid_iq.ki = 50.0f; 
     pid_iq.output_limit = 16000.0f; // 对应 SVPWM 最大电压
 
     // // --- 启动 ---
-    run_foc_flag = 1;
+    run_foc_flag = 0;
 
     target_id = 0.0f;
     target_iq = 0.8f;
 
     // 3. 启动控制
+    TIM1->SR &= ~TIM_SR_UIF; // 清除标志位，防止立即进入
     TIM1->DIER |= TIM_DIER_UIE; // 开启中断，正式进入 FOC 闭环
     TIM1->BDTR |= TIM_BDTR_MOE;
     TIM1->CR1 |= TIM_CR1_CEN;    // 确保计数器在运行
@@ -222,39 +238,31 @@ int main(void) {
     {
         // --- 1. 启动发送逻辑 ---
         // 检查是否有 bank 准备好，且 DMA 此时没活干
-        // if (bank_ready != 0xFF && is_dma_busy == 0) {
-        //     is_dma_busy = 1; 
-        //     uint8_t current_send_bank = bank_ready;
-        //     bank_ready = 0xFF; // 释放标志，允许 Timer 准备下一个
+        if (bank_ready != 0xFF && is_dma_busy == 0) {
+            is_dma_busy = 1; 
+            uint8_t current_send_bank = bank_ready;
+            bank_ready = 0xFF; // 释放标志，允许 Timer 准备下一个
 
-        //     DMA1_Channel1->CCR &= ~DMA_CCR_EN;
-        //     DMA1->IFCR = DMA_IFCR_CGIF1; // 清除之前的残留标志
+            DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+            DMA1->IFCR = DMA_IFCR_CGIF1; // 清除之前的残留标志
             
-        //     DMA1_Channel1->CMAR = (uint32_t)DataLog[current_send_bank];
-        //     // 关键：字节数 = 采样数 * 通道数 * 4
-        //     DMA1_Channel1->CNDTR = SAMPLE_NUM * FRAME_SIZE * 4; 
+            DMA1_Channel1->CMAR = (uint32_t)DataLog[current_send_bank];
+            // 关键：字节数 = 采样数 * 通道数 * 4
+            DMA1_Channel1->CNDTR = SAMPLE_NUM * FRAME_SIZE * 4; 
             
-        //     DMA1_Channel1->CCR |= DMA_CCR_EN;
-        //     // 确保串口的 DMAT 位是开启的
-        //     USART2->CR3 |= USART_CR3_DMAT; 
-        // }
+            DMA1_Channel1->CCR |= DMA_CCR_EN;
+            // 确保串口的 DMAT 位是开启的
+            USART2->CR3 |= USART_CR3_DMAT; 
+        }
 
-        // // --- 2. 检查完成逻辑 ---
-        // // 在主循环查 DMA 状态，彻底替代中断
-        // // 只要 DMA 的 TCIF1 标志位置 1，说明搬运完成
-        // if (is_dma_busy && (DMA1->ISR & DMA_ISR_TCIF1)) {
-        //     DMA1->IFCR = DMA_IFCR_CTCIF1; // 清除完成标志
-        //     // 这里千万不要去动 USART2->CR3，保持 DMAT 开启即可
-        //     is_dma_busy = 0; // 释放锁，允许下一波发送
-        // }
- //============================================================================  
-        // uint32_t cnt = TIM4->CNT;
-        // // 读取 PB6 (A) 和 PB7 (B) 的实时电平
-        // uint8_t a_level = (GPIOB->IDR & (1 << 6)) >> 6;
-        // uint8_t b_level = (GPIOB->IDR & (1 << 7)) >> 7;
-     
-        // printf("CNT:%d | A:%d B:%d Z:%d\r\n", cnt, a_level, b_level);
-        // delay_ms(100);
+        // --- 2. 检查完成逻辑 ---
+        // 在主循环查 DMA 状态，彻底替代中断
+        // 只要 DMA 的 TCIF1 标志位置 1，说明搬运完成
+        if (is_dma_busy && (DMA1->ISR & DMA_ISR_TCIF1)) {
+            DMA1->IFCR = DMA_IFCR_CTCIF1; // 清除完成标志
+            // 这里千万不要去动 USART2->CR3，保持 DMAT 开启即可
+            is_dma_busy = 0; // 释放锁，允许下一波发送
+        }
     //-----------------------------------------------------
         led_tick++;
         if (led_tick >= 100000) // 每500ms翻转一次LED0

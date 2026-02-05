@@ -67,6 +67,8 @@ volatile float debug_iq_target = 0;
 //-----------------------------------------------
 extern PID_Controller pid_id;
 extern PID_Controller pid_iq;
+extern PID_Controller pid_speed;
+extern PID_Controller pid_pos;  
 
 extern volatile uint8_t run_foc_flag;
 //-----------------------------------------------
@@ -88,10 +90,9 @@ float target_speed = 0.0f;      // 目标速度 (单位: rad/s)
 float actual_speed_filt = 0.0f; // 实际速度 (滤波后)
 float target_iq = 0.0f;         // 速度环的输出，作为电流环的输入
 float target_id = 0.0f;      
+float target_pos;       // 目标位置 (rad)
 
 static float i_d_f = 0.0f, i_q_f = 0.0f; // 电流滤波变量
-
-extern PID_Controller pid_id, pid_iq, pid_speed;
 
 volatile float Vd = 0.0f;
 volatile float Vq = 0.0f;
@@ -101,6 +102,9 @@ volatile float Vbeta;
 
 float open_loop_init_angle = 0.0f;
 float open_loop_Vq = 1.0f;     // 给 1.0V 电压，根据你的母线电压调整
+
+float actual_pos_rad = 0.0f;            // 实际累加位置 (rad, 多圈)
+float last_mech_angle_for_pos = 0.0f;   // 用于计算位置增量的上一次角度
 //-----------------------------------------------
 //==============================================
 // TIM1 更新中断服务函数
@@ -119,8 +123,6 @@ void TIM1_UP_TIM16_IRQHandler(void)
         // 2. 计算机械角度差（利用无符号数截断特性，无需 if 处理负数）
         uint16_t mech_diff = (raw_val - (uint16_t)my_zero_offset) & ENCODER_MASK;
 
-        // mech_diff = 16384 - mech_diff;
-
         // 3. 计算电角度分量 (0 - 16383)
         uint16_t elec_diff = (mech_diff * POLE_PAIRS) & ENCODER_MASK;
 
@@ -136,9 +138,9 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
         // 电流环逻辑 (15kHz)
         // 1. 计算原始偏差（ADC值 - 你的静态偏置）
-        int32_t raw_w= (int32_t)(ADC1->JDR1 & 0x0FFF) - (int32_t)offset_u-4;
-        int32_t raw_v = (int32_t)(ADC2->JDR1 & 0x0FFF) - (int32_t)offset_v-4;
-        int32_t raw_u = (int32_t)(ADC2->JDR2 & 0x0FFF) - (int32_t)offset_w+4;
+        int32_t raw_u = (int32_t)(ADC1->JDR1 & 0x0FFF) - (int32_t)offset_u;
+        int32_t raw_v = (int32_t)(ADC2->JDR1 & 0x0FFF) - (int32_t)offset_v;
+        int32_t raw_w = (int32_t)(ADC2->JDR2 & 0x0FFF) - (int32_t)offset_w;
 
         // 必须同时清除 ADC1 和 ADC2 的标志位
         ADC1->ISR |= ADC_ISR_JEOS; 
@@ -159,39 +161,71 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_iv = iv;
         debug_iw = iw;
 
-        // 速度环逻辑：15分频 (运行频率 1kHz)
-        static uint16_t speed_cnt = 0;
-        static float last_mech_angle = 0.0f;
-        speed_cnt++;
-        if (speed_cnt >= 15) 
+        // // 速度环逻辑：15分频 (运行频率 1kHz)
+        // static uint16_t speed_cnt = 0;
+        // static float last_mech_angle = 0.0f;
+        // speed_cnt++;
+        // if (speed_cnt >= 15) 
+        // {
+        //     speed_cnt = 0;
+
+        //     // 1. 计算角度差
+        //     float delta_angle = current_mech_rad - last_mech_angle;
+            
+        //     // 2. 环形边界处理
+        //     if (delta_angle >  3.1415926f) delta_angle -= 6.2831853f;
+        //     else if (delta_angle < -3.1415926f) delta_angle += 6.2831853f;
+
+        //     // 3. 计算速度 (rad/s)
+        //     float instant_speed = delta_angle * 1000.0f; // rad/s
+
+        //     // 4. 速度滤波 (0.03 较平滑，若响应太慢可改至 0.05-0.1)
+        //     actual_speed_filt = (instant_speed * 0.1f) + (actual_speed_filt * 0.9f);
+            
+        //     // 5. 更新历史位置
+        //     last_mech_angle = current_mech_rad;
+
+        //     if (run_foc_flag) 
+        //     {
+        //         target_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
+        //         target_id = 0.0f;
+        //     }
+        // }
+
+        // 3. 【外环逻辑】位置环 + 速度环 (15分频 = 1kHz)
+        static uint16_t outer_loop_cnt = 0;
+        outer_loop_cnt++;
+        if (outer_loop_cnt >= 15) 
         {
-            speed_cnt = 0;
+            outer_loop_cnt = 0;
 
-            // 1. 计算角度差
-            float delta_angle = current_mech_rad - last_mech_angle;
-            
-            // 2. 环形边界处理
-            if (delta_angle >  3.1415926f) delta_angle -= 6.2831853f;
-            else if (delta_angle < -3.1415926f) delta_angle += 6.2831853f;
+            // A. 位置累加 (处理 0~2PI 跳变，实现多圈)
+            float delta_pos = current_mech_rad - last_mech_angle_for_pos;
+            if (delta_pos >  3.1415926f) delta_pos -= 6.2831853f;
+            else if (delta_pos < -3.1415926f) delta_pos += 6.2831853f;
+            actual_pos_rad += delta_pos; 
+            last_mech_angle_for_pos = current_mech_rad;
 
-            // 3. 计算速度 (rad/s)
-            float instant_speed = delta_angle * 1000.0f; // rad/s
-
-            // 4. 速度滤波 (0.03 较平滑，若响应太慢可改至 0.05-0.1)
-            actual_speed_filt = (instant_speed * 0.1f) + (actual_speed_filt * 0.9f);
-            
-            // 5. 更新历史位置
-            last_mech_angle = current_mech_rad;
+            // B. 计算速度 (rad/s)
+            float instant_speed = delta_pos * 1000.0f; 
+            actual_speed_filt = (instant_speed * 0.1f) + (actual_speed_filt * 0.9f); // 低通滤波
 
             if (run_foc_flag) 
             {
+                // // === 位置环 ===
+                // // 输入：目标位置，实际位置 -> 输出：目标速度
+                target_speed = PID_Calc_Pos(&pid_pos, target_pos, actual_pos_rad);
+
+                // // === 速度环 ===
+                // // 输入：目标速度，实际速度 -> 输出：目标电流 target_iq
                 target_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
                 target_id = 0.0f;
             }
         }
-
         // === zero offset 0位对齐 ===
-        // elec_angle = -0.06f;    
+        elec_angle = 0.0f;          // U相测试 Vd=0.5, Vq=0 对应电角度 0度 (0.0f)
+        // elec_angle = 2.094395f;     // V相测试 Vd=0.5, Vq=0 对应电角度 120度 (2.094395f)
+        // elec_angle = 4.1887902f;    // W相测试 Vd=0.5, Vq=0 对应电角度 240度 (4.1887902f或-2.094395f)
 
         // 动态测试，IU，Iv，Iw 验证线序，应该是正弦波，出峰先U再V然后W
         // open_loop_angle += 0.0002f; // 步进值，控制旋转速度
@@ -246,8 +280,8 @@ void TIM1_UP_TIM16_IRQHandler(void)
         }
         else 
         {
-            Vd = 0.0f; 
-            Vq = 0.5f;
+            Vd = 1.0f; 
+            Vq = 0.0f;
             // ======= 强制模式：预对齐 =======
             // Vd = 0.8f*0.5f; 
             // Vq = 0.0f*0.5f;
@@ -279,18 +313,21 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
             // 如果当前缓冲区没在发送，就记录
             if (bank_ready != write_bank) {
-                // 记录你关心的闭环数据
                 // DataLog[write_bank][write_ptr][0].f = debug_raw_u;
                 // DataLog[write_bank][write_ptr][1].f = debug_raw_v;
                 // DataLog[write_bank][write_ptr][2].f = debug_raw_w;
 
-                // DataLog[write_bank][write_ptr][0].f = debug_iu;
-                // DataLog[write_bank][write_ptr][1].f = debug_iv;
-                // DataLog[write_bank][write_ptr][2].f = debug_iw;
+                DataLog[write_bank][write_ptr][0].f = debug_iu;
+                DataLog[write_bank][write_ptr][1].f = debug_iv;
+                DataLog[write_bank][write_ptr][2].f = debug_iw;
 
-                DataLog[write_bank][write_ptr][0].f = debug_iq_filt; 
-                DataLog[write_bank][write_ptr][1].f = debug_id_filt; 
-                DataLog[write_bank][write_ptr][2].f = debug_Vq; 
+                // DataLog[write_bank][write_ptr][0].f = TIM1->CCR1;
+                // DataLog[write_bank][write_ptr][1].f = TIM1->CCR2;
+                // DataLog[write_bank][write_ptr][2].f = TIM1->CCR3;
+
+                // DataLog[write_bank][write_ptr][0].f = debug_iq_filt; 
+                // DataLog[write_bank][write_ptr][1].f = debug_id_filt; 
+                // DataLog[write_bank][write_ptr][2].f = debug_Vq; 
 
                 DataLog[write_bank][write_ptr][3].u = 0x7F800000;      // VOFA 结束符
                 
@@ -397,29 +434,30 @@ void TIM1_PWM_Init(u16 arr)
 
 void SVPWM_Output_Standard(float Valpha, float Vbeta)
 {
-    // 1. 平方限幅 (SVPWM 允许模长达到 1.154)
+    // 1. 模长限幅 (SVPWM 最大不失调模长为 1.1547)
     float v_sq = Valpha * Valpha + Vbeta * Vbeta;
-    if (v_sq > 1.333f) { // 1.1547^2
+    if (v_sq > 1.333f) { 
         float inv_mod = 1.0f / sqrtf(v_sq);
         Valpha *= (inv_mod * 1.154f);
         Vbeta  *= (inv_mod * 1.154f);
     }
 
-    // 2. 反克拉克变换
+    // 2. 标准反克拉克变换 (修正 V/W 定义)
+    // U 相位于 0°，V 相位于 120°，W 相位于 240°
     float U_u = Valpha;
-    float U_v = -0.5f * Valpha - 0.8660254f * Vbeta;
-    float U_w = -0.5f * Valpha + 0.8660254f * Vbeta;
+    float U_v = -0.5f * Valpha + 0.8660254f * Vbeta; // 修正：V相 Beta 项为正
+    float U_w = -0.5f * Valpha - 0.8660254f * Vbeta; // 修正：W相 Beta 项为负
 
-    // 3. 寻找极值 (用于注入零序分量)
+    // 3. 寻找极值
     float max_v = U_u, min_v = U_u;
     if (U_v > max_v) max_v = U_v; if (U_v < min_v) min_v = U_v;
     if (U_w > max_v) max_v = U_w; if (U_w < min_v) min_v = U_w;
 
-    // 4. 注入零序分量 (中点平移)
+    // 4. 注入零序分量
     float V_offset = (max_v + min_v) * 0.5f;
 
-    // 5. 映射并限幅
-    float Ta = (U_u - V_offset + 1.154f) * 0.433f; // 归一化到 0~1 的优化算法
+    // 5. 归一化映射 (你的 0.433 算法非常高效，予以保留)
+    float Ta = (U_u - V_offset + 1.154f) * 0.433f; 
     float Tb = (U_v - V_offset + 1.154f) * 0.433f;
     float Tc = (U_w - V_offset + 1.154f) * 0.433f;
 
@@ -428,22 +466,22 @@ void SVPWM_Output_Standard(float Valpha, float Vbeta)
     uint16_t min_ccr = 200; // 必须预留最小关闭时间以保证 ADC 采样稳定
 
     // 6. 转换为计数值并预留采样窗口
-    uint16_t ccr1 = (uint16_t)(Ta * PWM_ARR);
-    uint16_t ccr2 = (uint16_t)(Tb * PWM_ARR);
-    uint16_t ccr3 = (uint16_t)(Tc * PWM_ARR);
+    uint16_t ccr_u = (uint16_t)(Ta * PWM_ARR);
+    uint16_t ccr_v = (uint16_t)(Tb * PWM_ARR);
+    uint16_t ccr_w = (uint16_t)(Tc * PWM_ARR);
 
-    if (ccr1 > max_ccr) ccr1 = max_ccr;
-    if (ccr2 > max_ccr) ccr2 = max_ccr;
-    if (ccr3 > max_ccr) ccr3 = max_ccr;
+    if (ccr_u > max_ccr) ccr_u = max_ccr;
+    if (ccr_v > max_ccr) ccr_v = max_ccr;
+    if (ccr_w > max_ccr) ccr_w = max_ccr;
 
-    // if (ccr1 < min_ccr) ccr1 = min_ccr;
-    // if (ccr2 < min_ccr) ccr2 = min_ccr;
-    // if (ccr3 < min_ccr) ccr3 = min_ccr;
+    // if (ccr_u < min_ccr) ccr_u = min_ccr;
+    // if (ccr_v < min_ccr) ccr_v = min_ccr;
+    // if (ccr_w < min_ccr) ccr_w = min_ccr;
 
     // 7. 写入寄存器
-    TIM1->CCR1 = ccr2;
-    TIM1->CCR2 = ccr3;
-    TIM1->CCR3 = ccr1;
+    TIM1->CCR1 = ccr_u;
+    TIM1->CCR2 = ccr_v;
+    TIM1->CCR3 = ccr_w;
 
     // 8. 更新采样点 (CCR4 保持在波谷附近)
     TIM1->CCR4 = (uint16_t)(PWM_ARR - 100);
@@ -503,6 +541,29 @@ float PID_Calc_Speed(PID_Controller* pid, float target, float current)
     if (out > pid->output_limit) out = pid->output_limit;
     if (out < -pid->output_limit) out = -pid->output_limit;
     
+    return out;
+}
+
+/**
+ * @brief 位置环 PID 计算
+ */
+float PID_Calc_Pos(PID_Controller* pid, float target, float current) {
+    // 1. 计算位置偏差
+    float error = target - current;
+
+    // 2. 比例项 (P)
+    float p_term = pid->kp * error;
+
+    // 3. 积分项 (I) - 通常为 0
+    pid->integral += error * pid->ki * 0.001f; // 1ms 周期
+
+    // 4. 总输出计算
+    float out = p_term + pid->integral;
+
+    // 5. 输出限幅 (限制最大寻道速度)
+    if (out > pid->output_limit) out = pid->output_limit;
+    else if (out < -pid->output_limit) out = -pid->output_limit;
+
     return out;
 }
 

@@ -101,21 +101,36 @@ void ADC_Init_Registers(void)
 void Calibrate_Current_Offset(void) 
 {
     printf("[System] Starting Automatic Synchronous Calibration...\r\n");
+    delay_ms(10);
 
-   // 1. 强制占空比 50%，开启定时器产生触发信号
-    TIM1->CCR1 = PWM_ARR / 2;
-    TIM1->CCR2 = PWM_ARR / 2;
-    TIM1->CCR3 = PWM_ARR / 2;
-    TIM1->CCR4 = PWM_ARR - 100; // 预留 100 ticks 确保在下桥臂导通窗口内
+    // 确保 FOC 中断关闭，防止干扰校准过程
+    TIM1->DIER &= ~TIM_DIER_UIE;
+
+    // 使用 SVPWM 产生 50% 占空比 (零矢量)
+    // 输入 (0,0) 会让 Ta, Tb, Tc 都等于 0.5，从而产生 PWM_ARR/2 的占空比
+    SVPWM_Output_Standard(0.0f, 0.0f);
 
     TIM1->BDTR |= TIM_BDTR_MOE;
     TIM1->CR1  |= TIM_CR1_CEN;
     delay_ms(100);
 
-    // 2. 【最重要的一步】启动 ADC 的硬件触发监听模式
+    // 确保 ADC 处于 Ready 状态且已使能
+    // 如果 ADC 没使能，JADSTART 是无效的
+    if (!(ADC1->CR & ADC_CR_ADEN) || !(ADC2->CR & ADC_CR_ADEN)) {
+        printf("[Error] ADC not enabled!\r\n");
+        return;
+    }
+
+    // 清除旧的标志位，确保开始时是干净的
+    ADC1->ISR |= (ADC_ISR_JEOS | ADC_ISR_JEOC);
+    ADC2->ISR |= (ADC_ISR_JEOS | ADC_ISR_JEOC);
+
+    // 启动 ADC 的硬件触发监听模式
     // 只有执行了这一步，ADC 才会开始等待 CCR4 的上升沿
     ADC1->CR |= ADC_CR_JADSTART;
     ADC2->CR |= ADC_CR_JADSTART;
+
+    delay_ms(100);
 
     uint32_t sum_u = 0, sum_v = 0, sum_w = 0;
     int success_count = 0;
@@ -123,7 +138,7 @@ void Calibrate_Current_Offset(void)
     for(int i = 0; i < 2000; i++) 
     {
         uint32_t timeout = 200000;
-        // 3. 等待硬件触发完成 (JEOS 代表整个序列转换完成)
+        // 等待硬件触发完成 (JEOS 代表整个序列转换完成)
         while(!(ADC2->ISR & ADC_ISR_JEOS) && timeout--);
 
         if(timeout > 0) {
@@ -132,15 +147,15 @@ void Calibrate_Current_Offset(void)
             sum_w += ADC2->JDR2;
             success_count++;
             
-            // 4. 清除标志位，ADC 会自动等待下一个 PWM 周期的 CCR4 信号
+            // 清除标志位，ADC 会自动等待下一个 PWM 周期的 CCR4 信号
             ADC1->ISR |= ADC_ISR_JEOS;
             ADC2->ISR |= ADC_ISR_JEOS;
         }
     }
 
-    // 5. 停止监听（正式跑 FOC 时再开启）
+    // 停止监听（正式跑 FOC 时再开启）
     // 注意：在正式 FOC 循环开始前，需再次执行 JADSTART 开启监听
-    if(success_count > 0) {
+    if(success_count > 100) {
         offset_u = (float)sum_u / success_count;
         offset_v = (float)sum_v / success_count;
         offset_w = (float)sum_w / success_count;
@@ -150,5 +165,10 @@ void Calibrate_Current_Offset(void)
         printf("[Calib] FAILED: No Hardware Triggers detected.\r\n");
         delay_ms(50);
     }
+
+    // 校准完成，根据需要保持输出或关闭
+    // 建议：暂时关闭输出，直到正式进入 FOC 或对齐逻辑
+    TIM1->BDTR &= ~TIM_BDTR_MOE; 
+    delay_ms(20);
 }
 

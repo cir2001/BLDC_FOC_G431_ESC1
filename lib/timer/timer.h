@@ -8,6 +8,14 @@
 #define PWM_ARR             5666.0f
 #define PWM_ARR_INT         5666
 #define ENCODER_MASK       0x3FFF
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
+#define SQRT3 0.577350269f
+
+#define ENCODER_RESOLUTION 16384
+#define POLE_PAIRS         7 //10
 //---------------------------------------------
 typedef struct {
     float kp;

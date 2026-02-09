@@ -203,26 +203,26 @@ int main(void) {
 
     //--- PID 参数初始化 ---
     //--- 位置环 (最外环) ---
-    target_pos = 6.28f; // 让电机转到 1 圈的位置
-    pid_pos.kp = 12.0f;
-    pid_pos.ki = 0.0f;
-    pid_pos.output_limit = 20.0f; // 限制最大速度环输出 (rad/s)
+    target_pos = 0.0f; // 让电机转到 1 圈的位置
+    pid_pos.kp = 250.0f;
+    pid_pos.ki = 200.5f;
+    pid_pos.output_limit = 50.0f; // 限制最大速度环输出 (rad/s)
 
     // --- 速度环 (外环) ---
-    target_speed = 15.0f;      
-    pid_speed.kp = 1.4f;      // 速度环 Kp 通常较小
-    pid_speed.ki = 0.01f; 
-    pid_speed.output_limit = 800.0f; // 限制最大电流
+    target_speed = 50.0f;      
+    pid_speed.kp = 0.08f;      // 速度环 Kp 通常较小
+    pid_speed.ki = 0.2f; 
+    pid_speed.output_limit = 50.0f; // 限制最大电流
 
     // --- 电流环 (内环) ---
-    pid_id.kp = 5.0f;   pid_id.ki = 50.0f; 
-    pid_id.output_limit = 16000.0f; // 对应 SVPWM 最大电压 
+    pid_id.kp = 5.0f;   pid_id.ki = 1.0f; 
+    pid_id.output_limit = 1500.0f; // 对应 SVPWM 最大电压 
     
-    pid_iq.kp = 5.0f;   pid_iq.ki = 50.0f; 
-    pid_iq.output_limit = 16000.0f; // 对应 SVPWM 最大电压
+    pid_iq.kp = 5.0f;   pid_iq.ki = 1.0f; 
+    pid_iq.output_limit = 1500.0f; // 对应 SVPWM 最大电压
 
     // // --- 启动 ---
-    run_foc_flag = 0;
+    run_foc_flag = 1;
 
     target_id = 0.0f;
     target_iq = 0.8f;

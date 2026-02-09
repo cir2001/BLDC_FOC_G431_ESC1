@@ -10,13 +10,7 @@
 #include "usart.h"
 //-----------------------------------------------------
 // --- 宏定义与常量 ---
-#ifndef M_PI
-#define M_PI 3.14159265358979323846f
-#endif
-#define SQRT3 0.577350269f
 
-#define ENCODER_RESOLUTION 16384
-#define POLE_PAIRS         7
 //-------------------------------------------------
 // 双缓冲区
 VofaData_t DataLog[2][SAMPLE_NUM][FRAME_SIZE];
@@ -101,10 +95,14 @@ volatile float Valpha;
 volatile float Vbeta;
 
 float open_loop_init_angle = 0.0f;
-float open_loop_Vq = 1.0f;     // 给 1.0V 电压，根据你的母线电压调整
+float open_loop_Vq = 0.2f;     // 给 1.0V 电压，根据你的母线电压调整
 
 float actual_pos_rad = 0.0f;            // 实际累加位置 (rad, 多圈)
 float last_mech_angle_for_pos = 0.0f;   // 用于计算位置增量的上一次角度
+
+// --- 慢速旋转控制变量 ---
+float move_speed_deg_per_s = 20.0f; // 设定转速：每秒转多少度 (根据需要修改)
+uint8_t slow_rotation_en = 1;       // 慢速旋转使能开关
 //-----------------------------------------------
 //==============================================
 // TIM1 更新中断服务函数
@@ -128,8 +126,6 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
         // 4. 转换为弧度 (0 - 2*PI)
         float elec_angle = (float)elec_diff * 0.000383495197f; // 0.000383495197f = 2*PI / 16384
-
-        elec_angle += 1.2f; // 加上强制输出的角度偏移
 
         debug_elec_angle = elec_angle;
 
@@ -160,8 +156,8 @@ void TIM1_UP_TIM16_IRQHandler(void)
         debug_iu = iu;
         debug_iv = iv;
         debug_iw = iw;
-
-        // // 速度环逻辑：15分频 (运行频率 1kHz)
+    //=============================================================================
+        // 速度环逻辑：15分频 (运行频率 1kHz)
         // static uint16_t speed_cnt = 0;
         // static float last_mech_angle = 0.0f;
         // speed_cnt++;
@@ -180,7 +176,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         //     float instant_speed = delta_angle * 1000.0f; // rad/s
 
         //     // 4. 速度滤波 (0.03 较平滑，若响应太慢可改至 0.05-0.1)
-        //     actual_speed_filt = (instant_speed * 0.1f) + (actual_speed_filt * 0.9f);
+        //     actual_speed_filt = (instant_speed * 0.05f) + (actual_speed_filt * 0.95f);
             
         //     // 5. 更新历史位置
         //     last_mech_angle = current_mech_rad;
@@ -191,7 +187,7 @@ void TIM1_UP_TIM16_IRQHandler(void)
         //         target_id = 0.0f;
         //     }
         // }
-
+    //=================================================================================
         // 3. 【外环逻辑】位置环 + 速度环 (15分频 = 1kHz)
         static uint16_t outer_loop_cnt = 0;
         outer_loop_cnt++;
@@ -208,22 +204,37 @@ void TIM1_UP_TIM16_IRQHandler(void)
 
             // B. 计算速度 (rad/s)
             float instant_speed = delta_pos * 1000.0f; 
-            actual_speed_filt = (instant_speed * 0.1f) + (actual_speed_filt * 0.9f); // 低通滤波
+            actual_speed_filt = (instant_speed * 0.05f) + (actual_speed_filt * 0.95f); // 低通滤波
 
             if (run_foc_flag) 
             {
-                // // === 位置环 ===
-                // // 输入：目标位置，实际位置 -> 输出：目标速度
+                // ================== 新增：慢速旋转目标生成 ==================
+                if(slow_rotation_en) 
+                {
+                    // 将 deg/s 转换为 rad/ms (因为控制周期是 1ms)
+                    // 公式：速度 * (PI/180) * 0.001
+                    float step = move_speed_deg_per_s * 0.0174533f * 0.001f;
+                    target_pos += step; 
+                }
+                // ==========================================================
+
+                // === 位置环控制 ===
                 target_speed = PID_Calc_Pos(&pid_pos, target_pos, actual_pos_rad);
 
-                // // === 速度环 ===
-                // // 输入：目标速度，实际速度 -> 输出：目标电流 target_iq
+                // === 速度环控制 ===
                 target_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
                 target_id = 0.0f;
+            }else
+            {
+                // 当电机未启动时，让目标位置跟随当前位置，防止启动瞬间“弹射”
+                target_pos = actual_pos_rad;
+                PID_Reset(&pid_pos); // 建议增加一个重置积分的函数
+                PID_Reset(&pid_speed);
             }
         }
+    //=================================================================================
         // === zero offset 0位对齐 ===
-        elec_angle = 0.0f;          // U相测试 Vd=0.5, Vq=0 对应电角度 0度 (0.0f)
+        // elec_angle = 0.0f;          // U相测试 Vd=0.5, Vq=0 对应电角度 0度 (0.0f)
         // elec_angle = 2.094395f;     // V相测试 Vd=0.5, Vq=0 对应电角度 120度 (2.094395f)
         // elec_angle = 4.1887902f;    // W相测试 Vd=0.5, Vq=0 对应电角度 240度 (4.1887902f或-2.094395f)
 
@@ -267,8 +278,8 @@ void TIM1_UP_TIM16_IRQHandler(void)
             Vd = PID_Calc_Current(&pid_id, target_id, i_d_f);
             Vq = PID_Calc_Current(&pid_iq, target_iq, i_q_f);
 
-            Vd = Vd*0.5f;
-            Vq = Vq*0.5f;
+            // Vd = Vd*0.5f;
+            // Vq = Vq*0.5f;
             // ===== 开环旋转逻辑 判断电角度与旋转方向的正确性，调整pwm输出的相序 ========
             // open_loop_angle += 0.0005f; // 步进值，控制旋转速度
             // if(open_loop_angle > 6.2831853f) open_loop_angle -= 6.2831853f;
@@ -317,17 +328,17 @@ void TIM1_UP_TIM16_IRQHandler(void)
                 // DataLog[write_bank][write_ptr][1].f = debug_raw_v;
                 // DataLog[write_bank][write_ptr][2].f = debug_raw_w;
 
-                DataLog[write_bank][write_ptr][0].f = debug_iu;
-                DataLog[write_bank][write_ptr][1].f = debug_iv;
-                DataLog[write_bank][write_ptr][2].f = debug_iw;
+                // DataLog[write_bank][write_ptr][0].f = debug_iu;
+                // DataLog[write_bank][write_ptr][1].f = debug_iv;
+                // DataLog[write_bank][write_ptr][2].f = debug_iw;
 
                 // DataLog[write_bank][write_ptr][0].f = TIM1->CCR1;
                 // DataLog[write_bank][write_ptr][1].f = TIM1->CCR2;
                 // DataLog[write_bank][write_ptr][2].f = TIM1->CCR3;
 
-                // DataLog[write_bank][write_ptr][0].f = debug_iq_filt; 
-                // DataLog[write_bank][write_ptr][1].f = debug_id_filt; 
-                // DataLog[write_bank][write_ptr][2].f = debug_Vq; 
+                DataLog[write_bank][write_ptr][0].f = debug_iq_filt; 
+                DataLog[write_bank][write_ptr][1].f = debug_id_filt; 
+                DataLog[write_bank][write_ptr][2].f = debug_Vq; 
 
                 DataLog[write_bank][write_ptr][3].u = 0x7F800000;      // VOFA 结束符
                 
@@ -345,9 +356,11 @@ void TIM1_UP_TIM16_IRQHandler(void)
         { // 15kHz下，7500次是500ms
             Timer1_Counter = 0;
             LED0_TOGGLE();
-            // printf("elec_angle:%.2f\r\n", elec_angle);
+            // printf("elec_angle:%.2f\r\n", debug_elec_angle);
             // printf("CNT:%d|mech_diff:%d\r\n", TIM4->CNT,mech_diff);
             // printf("Target:%.2f, Act:%.2f\r\n",target_speed, actual_speed_filt);
+            // printf("current_mech_rad:%.2f\r\n", current_mech_rad);
+            // printf("actual_speed:%.2f, target_iq:%.2f\r\n", actual_speed_filt, target_iq);
         }
     }
 }
@@ -579,5 +592,14 @@ void Motor_OpenLoop_Tick(void) {
     SVPWM_Output_Standard(Ua, Ub); 
 }
 
-
+/**
+ * @brief 重置 PID 控制器状态
+ * @param pid: 指向 PID 结构体的指针
+ */
+void PID_Reset(PID_Controller* pid) 
+{
+    pid->integral = 0.0f;
+    // 如果你的结构体中有 last_error (用于 D 项计算)，也应在此处清零
+    // pid->last_error = 0.0f; 
+}
 

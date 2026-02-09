@@ -6,14 +6,9 @@
 #include "align.h"
 #include "control.h"
 //-----------------------------------------------------
-// --- 宏定义与常量 ---
-#define POLE_PAIRS 7
-#ifndef M_PI
-#define M_PI 3.1415926535f
-#endif
 //-----------------------------------------------------
 // --- 变量声明 ---
-float test_v = 1.5f;           // 测试电压 (根据母线电压调节，12V下建议0.8-1.5V)
+float test_v = 0.2f;           // 测试电压 (根据母线电压调节，12V下建议0.8-1.5V)
 int test_cycles = 10;          // 电角度转动的圈数
 float theta_e_step = 0.005f;    // 步进速度
 
@@ -82,7 +77,7 @@ uint16_t FOC_Align_Sensor(void)
     // --- 阶段 4: 结果应用 ---
     // manual_adjust 补偿：如果你的 Clarke 变换以 U 轴为 0 度，
     // 而电流环运行时发现输出异常，可在此微调。 485
-    int16_t manual_adjust = 0;//60; 
+    int16_t manual_adjust = -3;//60; 
     uint16_t final_offset = (uint16_t)((zero_offset + manual_adjust) & ENCODER_MASK);
 
     // 保持轻微电压防止滑走，直到 main 函数开启中断

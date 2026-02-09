@@ -4,12 +4,19 @@
 #include <errno.h>
 #include "led.h"    
 #include <string.h>
+#include "timer.h"
 //-------------------------------------------------------------------------------
 //设置FLASH 保存地址(必须为偶数，且其值要大于本代码所占用FLASH的大小+0X08000000)
 #define FLASH_SAVE_ADDR  0X08010000 	
 u16 FalshSave[32];
 //--------------------------------------------------------
 uint8_t UART2_DMA_TX_BUF[UART2_DMA_TX_BUF_SIZE];
+uint8_t UART2_RX_BUF[UART2_RX_BUF_SIZE]; // 接收缓冲区
+
+// 引用外部控制变量
+extern float move_speed_deg_per_s;
+extern uint8_t run_foc_flag;
+extern PID_Controller pid_pos; // 假设你的位置环 PID 结构体名为 pid_pos
 //----------------------------------------------------------
 //
 //----------------------------------------------------------
@@ -37,12 +44,14 @@ void uart2_init(uint32_t bound) {
     USART2->CR1 = 0;  // 先清
     USART2->CR1 = USART_CR1_TE 
                 | USART_CR1_RE
+                | USART_CR1_IDLEIE // 开启空闲中断
                 | USART_CR1_UE;   // UE 最后使能
 
-    USART2->CR3 |= USART_CR3_DMAT; // 使能 DMA 发送请求
+    USART2->CR3 |= USART_CR3_DMAT | USART_CR3_DMAR; // 开启 DMA 发送和接收请求
 
     // 4. DMAMUX 配置 (USART2_TX ID=27)
     DMAMUX1_Channel0->CCR = 27U; 
+    DMAMUX1_Channel1->CCR = 26U; // DMA1_CH2 用于 RX
 
     // 5. DMA1_Channel1 配置
     DMA1_Channel1->CCR &= ~DMA_CCR_EN;
@@ -52,6 +61,18 @@ void uart2_init(uint32_t bound) {
                         | DMA_CCR_MINC;      // 内存地址递增
 
 
+    // 6. 【新增】DMA1_Channel2 (RX) 配置
+    DMA1_Channel2->CCR &= ~DMA_CCR_EN;
+    DMA1_Channel2->CPAR = (uint32_t)&USART2->RDR;
+    DMA1_Channel2->CMAR = (uint32_t)UART2_RX_BUF;
+    DMA1_Channel2->CNDTR = UART2_RX_BUF_SIZE;
+    // 模式：循环模式(CIRC), 内存递增(MINC), 中等优先级
+    DMA1_Channel2->CCR = DMA_CCR_MINC | DMA_CCR_CIRC | (1U << DMA_CCR_PL_Pos); 
+    DMA1_Channel2->CCR |= DMA_CCR_EN;
+
+    // 7. NVIC 配置
+    NVIC_SetPriority(USART2_IRQn, 1); 
+    NVIC_EnableIRQ(USART2_IRQn);
     // NVIC_SetPriority(DMA1_Channel1_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(), 2, 0));  // 抢占优先级 2
     // NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 }
@@ -59,14 +80,40 @@ void uart2_init(uint32_t bound) {
 //----------------------------------------------------------
 // USART2 中断服务程序
 //----------------------------------------------------------
-// void USART2_IRQHandler(void)
-// {
-//     if(USART2->ISR & USART_ISR_RXNE) // 接收到数据
-//     {
-//         uint8_t res = USART2->RDR;   // 读取数据清除标志位
-//         // 可以在这里处理接收
-//     }
-// }
+void USART2_IRQHandler(void)
+{
+    // 1. 检查是否为空闲中断 (IDLE)
+    if(USART2->ISR & USART_ISR_IDLE)
+    {
+        USART2->ICR |= USART_ICR_IDLECF; // 清除空闲中断标志
+
+        // 1. 停止 DMA 以读取准确的 CNDTR
+        DMA1_Channel2->CCR &= ~DMA_CCR_EN;
+
+        // 2. 计算长度
+        uint16_t rx_len = UART2_RX_BUF_SIZE - DMA1_Channel2->CNDTR;
+
+        if(rx_len > 0)
+        {
+            // 3. 强制在数据末尾加结束符，确保 atof 停止
+            UART2_RX_BUF[rx_len] = '\0'; 
+            
+            // 调试用：先看看收到的到底是什么
+            // printf("Raw Rx: %s\r\n", UART2_RX_BUF); 
+
+            uart2_parse_command((char*)UART2_RX_BUF);
+        }
+
+        // 4. 【关键】重置 DMA 计数器，确保下次数据从 buf[0] 开始
+        DMA1_Channel2->CNDTR = UART2_RX_BUF_SIZE;
+        DMA1_Channel2->CCR |= DMA_CCR_EN;
+    }
+
+    // 清除错误标志（如 ORE），防止串口死掉
+    if (USART2->ISR & (USART_ISR_ORE | USART_ISR_NE | USART_ISR_FE)) {
+        USART2->ICR |= (USART_ICR_ORECF | USART_ICR_NECF | USART_ICR_FECF);
+    }
+}
 //-----------------------------------------------------------
 //
 //----------------------------------------------------------
@@ -123,6 +170,55 @@ int _write(int file, char *ptr, int len)
     DMA1_Channel1->CCR |= DMA_CCR_EN;
 
     return len;
+}
+
+/**
+ * @brief 指令解析器
+ * 格式示例：S60 (速度60), P1.5 (Kp设为1.5), M1 (启动), M0 (停止)
+ */
+void uart2_parse_command(char *buf) {
+    char cmd = buf[0];
+
+    float val = parse_float_manual(&buf[1]); // 使用手工版
+
+    switch (cmd) {
+        case 'S':
+            move_speed_deg_per_s = val;
+            printf(">> Target Speed: %.2f deg/s\r\n", val);
+            break;
+        case 'P':
+            pid_pos.kp = val;
+            printf(">> Pos_Kp: %.3f\r\n", val);
+            break;
+        case 'M':
+            run_foc_flag = (val > 0.5f) ? 1 : 0;
+            printf(">> Motor %s\r\n", run_foc_flag ? "ON" : "OFF");
+            break;
+        default:
+            // 这里可以打印出具体的字符 ASCII 码，看是否有隐藏字符
+            printf("?? Unknown Cmd: %c (0x%02X)\r\n", cmd, cmd);
+            break;
+    }
+}
+
+// 放在 uart.c 中，替代 atof
+float parse_float_manual(char* s) {
+    float res = 0.0f, fact = 1.0f;
+    // 跳过非数字字符，直到找到数字或负号
+    while (*s && (*s < '0' || *s > '9') && *s != '-') s++;
+    
+    if (*s == '-') { s++; fact = -1.0f; }
+    
+    // 解析整数部分
+    for (int point_seen = 0; *s; s++) {
+        if (*s == '.') { point_seen = 1; continue; }
+        int d = *s - '0';
+        if (d >= 0 && d <= 9) {
+            if (point_seen) fact /= 10.0f;
+            res = res * 10.0f + (float)d;
+        } else break; // 遇到空格或换行直接退出
+    }
+    return res * fact;
 }
 
 

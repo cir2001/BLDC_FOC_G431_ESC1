@@ -204,8 +204,8 @@ int main(void) {
     //--- PID 参数初始化 ---
     //--- 位置环 (最外环) ---
     target_pos = 0.0f; // 让电机转到 1 圈的位置
-    pid_pos.kp = 250.0f;
-    pid_pos.ki = 200.5f;
+    pid_pos.kp = 450.0f;
+    pid_pos.ki = 0.0f;
     pid_pos.output_limit = 50.0f; // 限制最大速度环输出 (rad/s)
 
     // --- 速度环 (外环) ---
@@ -238,22 +238,22 @@ int main(void) {
     {
         // --- 1. 启动发送逻辑 ---
         // 检查是否有 bank 准备好，且 DMA 此时没活干
-        if (bank_ready != 0xFF && is_dma_busy == 0) {
-            is_dma_busy = 1; 
-            uint8_t current_send_bank = bank_ready;
-            bank_ready = 0xFF; // 释放标志，允许 Timer 准备下一个
+        // if (bank_ready != 0xFF && is_dma_busy == 0) {
+        //     is_dma_busy = 1; 
+        //     uint8_t current_send_bank = bank_ready;
+        //     bank_ready = 0xFF; // 释放标志，允许 Timer 准备下一个
 
-            DMA1_Channel1->CCR &= ~DMA_CCR_EN;
-            DMA1->IFCR = DMA_IFCR_CGIF1; // 清除之前的残留标志
+        //     DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+        //     DMA1->IFCR = DMA_IFCR_CGIF1; // 清除之前的残留标志
             
-            DMA1_Channel1->CMAR = (uint32_t)DataLog[current_send_bank];
-            // 关键：字节数 = 采样数 * 通道数 * 4
-            DMA1_Channel1->CNDTR = SAMPLE_NUM * FRAME_SIZE * 4; 
+        //     DMA1_Channel1->CMAR = (uint32_t)DataLog[current_send_bank];
+        //     // 关键：字节数 = 采样数 * 通道数 * 4
+        //     DMA1_Channel1->CNDTR = SAMPLE_NUM * FRAME_SIZE * 4; 
             
-            DMA1_Channel1->CCR |= DMA_CCR_EN;
-            // 确保串口的 DMAT 位是开启的
-            USART2->CR3 |= USART_CR3_DMAT; 
-        }
+        //     DMA1_Channel1->CCR |= DMA_CCR_EN;
+        //     // 确保串口的 DMAT 位是开启的
+        //     USART2->CR3 |= USART_CR3_DMAT; 
+        // }
 
         // --- 2. 检查完成逻辑 ---
         // 在主循环查 DMA 状态，彻底替代中断

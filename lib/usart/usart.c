@@ -17,6 +17,12 @@ uint8_t UART2_RX_BUF[UART2_RX_BUF_SIZE]; // 接收缓冲区
 extern float move_speed_deg_per_s;
 extern uint8_t run_foc_flag;
 extern PID_Controller pid_pos; // 假设你的位置环 PID 结构体名为 pid_pos
+// --- 往复测试变量 ---
+extern uint8_t test_mode_en;    // 测试模式使能
+extern uint8_t test_state;      // 0: 停止, 1: 正转中, 2: 反转中
+extern float test_start_pos;    // 起始位置
+extern float actual_pos_rad;            // 实际累加位置 (rad, 多圈)
+extern float target_pos;       // 目标位置 (rad)
 //----------------------------------------------------------
 //
 //----------------------------------------------------------
@@ -193,6 +199,19 @@ void uart2_parse_command(char *buf) {
         case 'M':
             run_foc_flag = (val > 0.5f) ? 1 : 0;
             printf(">> Motor %s\r\n", run_foc_flag ? "ON" : "OFF");
+            break;
+        case 'T': // Test Mode: T1 开启, T0 关闭
+            if (val > 0.5f) {
+                test_mode_en = 1;
+                test_state = 1;           // 从正转开始
+                test_start_pos = actual_pos_rad; // 以当前位置为基准点
+                target_pos = actual_pos_rad;
+                printf(">> Test Mode START: 5 turns FWD/BWD\r\n");
+            } else {
+                test_mode_en = 0;
+                test_state = 0;
+                printf(">> Test Mode STOP\r\n");
+            }
             break;
         default:
             // 这里可以打印出具体的字符 ASCII 码，看是否有隐藏字符

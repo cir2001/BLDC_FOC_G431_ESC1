@@ -103,6 +103,13 @@ float last_mech_angle_for_pos = 0.0f;   // 用于计算位置增量的上一次�
 // --- 慢速旋转控制变量 ---
 float move_speed_deg_per_s = 100.0f; // 设定转速：每秒转多少度 (根据需要修改)
 uint8_t slow_rotation_en = 1;       // 慢速旋转使能开关
+
+// --- 往复测试变量 ---
+uint8_t test_mode_en = 0;    // 测试模式使能
+uint8_t test_state = 0;      // 0: 停止, 1: 正转中, 2: 反转中
+float test_start_pos = 0;    // 起始位置
+float test_target_range = 31.4159f; // 5圈的弧度
+float move_step = 0.1f;     // 每毫秒移动的步长（控制旋转速度）
 //-----------------------------------------------
 //==============================================
 // TIM1 更新中断服务函数
@@ -206,7 +213,27 @@ void TIM1_UP_TIM16_IRQHandler(void)
             float instant_speed = delta_pos * 1000.0f; 
             actual_speed_filt = (instant_speed * 0.05f) + (actual_speed_filt * 0.95f); // 低通滤波
 
-            if (run_foc_flag) 
+            // B. 自动测试状态机
+            if (run_foc_flag && test_mode_en) 
+            {
+                switch (test_state) 
+                {
+                    case 1: // 正转阶段
+                        target_pos += move_step;
+                        if (target_pos >= test_start_pos + test_target_range) {
+                            test_state = 2; // 到达5圈，切换反转
+                        }
+                        break;
+
+                    case 2: // 反转阶段
+                        target_pos -= move_step;
+                        if (target_pos <= test_start_pos) {
+                            test_state = 1; // 回到起点，切换正转
+                        }
+                        break;
+                }
+            }
+            else if (run_foc_flag && !test_mode_en) //if (run_foc_flag) 
             {
                 // ================== 新增：慢速旋转目标生成 ==================
                 if(slow_rotation_en) 
@@ -218,19 +245,21 @@ void TIM1_UP_TIM16_IRQHandler(void)
                 }
                 // ==========================================================
 
-                // === 位置环控制 ===
-                target_speed = PID_Calc_Pos(&pid_pos, target_pos, actual_pos_rad);
-
-                // === 速度环控制 ===
-                target_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
-                target_id = 0.0f;
-            }else
-            {
-                // 当电机未启动时，让目标位置跟随当前位置，防止启动瞬间“弹射”
-                target_pos = actual_pos_rad;
-                PID_Reset(&pid_pos); // 建议增加一个重置积分的函数
-                PID_Reset(&pid_speed);
+               
             }
+            // else
+            // {
+            //     // 当电机未启动时，让目标位置跟随当前位置，防止启动瞬间“弹射”
+            //     target_pos = actual_pos_rad;
+            //     PID_Reset(&pid_pos); // 建议增加一个重置积分的函数
+            //     PID_Reset(&pid_speed);
+            // }
+            // === 位置环控制 ===
+            target_speed = PID_Calc_Pos(&pid_pos, target_pos, actual_pos_rad);
+
+            // === 速度环控制 ===
+            target_iq = PID_Calc_Speed(&pid_speed, target_speed, actual_speed_filt);
+            target_id = 0.0f;
         }
     //=================================================================================
         // === zero offset 0位对齐 ===
